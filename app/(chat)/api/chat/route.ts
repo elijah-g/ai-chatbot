@@ -1,24 +1,23 @@
 import {
-  type UIMessage,
+  appendClientMessage,
   appendResponseMessages,
-  createDataStreamResponse,
+  createDataStream,
   smoothStream,
   streamText,
 } from 'ai';
 import { auth, type UserType } from '@/app/(auth)/auth';
-import { systemPrompt } from '@/lib/ai/prompts';
+import { type RequestHints, systemPrompt } from '@/lib/ai/prompts';
 import {
+  createStreamId,
   deleteChatById,
   getChatById,
   getMessageCountByUserId,
+  getMessagesByChatId,
+  getStreamIdsByChatId,
   saveChat,
   saveMessages,
 } from '@/lib/db/queries';
-import {
-  generateUUID,
-  getMostRecentUserMessage,
-  getTrailingMessageId,
-} from '@/lib/utils';
+import { generateUUID, getTrailingMessageId } from '@/lib/utils';
 import { generateTitleFromUserMessage } from '../../actions';
 import { isProductionEnvironment } from '@/lib/constants';
 import { myProvider } from '@/lib/ai/providers';
@@ -122,7 +121,7 @@ export async function POST(request: Request) {
 
     if (!chat) {
       const title = await generateTitleFromUserMessage({
-        message: userMessage,
+        message,
       });
       console.log('Generated title for new chat:', title);
       await saveChat({ id, userId: session.user.id, title });
@@ -134,14 +133,31 @@ export async function POST(request: Request) {
       }
     }
 
+    const previousMessages = await getMessagesByChatId({ id });
+
+    const messages = appendClientMessage({
+      // @ts-expect-error: todo add type conversion from DBMessage[] to UIMessage[]
+      messages: previousMessages,
+      message,
+    });
+
+    const { longitude, latitude, city, country } = geolocation(request);
+
+    const requestHints: RequestHints = {
+      longitude,
+      latitude,
+      city,
+      country,
+    };
+
     await saveMessages({
       messages: [
         {
           chatId: id,
-          id: userMessage.id,
+          id: message.id,
           role: 'user',
-          parts: userMessage.parts,
-          attachments: userMessage.experimental_attachments ?? [],
+          parts: message.parts,
+          attachments: message.experimental_attachments ?? [],
           createdAt: new Date(),
         },
       ],
@@ -181,7 +197,7 @@ export async function POST(request: Request) {
       execute: (dataStream) => {
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
-          system: systemPrompt({ selectedChatModel }),
+          system: systemPrompt({ selectedChatModel, requestHints }),
           messages,
           maxSteps: 5,
           experimental_activeTools: formatToolsForAI(activeTools),
@@ -257,7 +273,7 @@ export async function POST(request: Request) {
                 }
 
                 const [, assistantMessage] = appendResponseMessages({
-                  messages: [userMessage],
+                  messages: [message],
                   responseMessages: response.messages,
                 });
 
@@ -319,6 +335,60 @@ export async function POST(request: Request) {
   }
 }
 
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const chatId = searchParams.get('chatId');
+
+  if (!chatId) {
+    return new Response('id is required', { status: 400 });
+  }
+
+  const session = await auth();
+
+  if (!session?.user) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+
+  let chat: Chat;
+
+  try {
+    chat = await getChatById({ id: chatId });
+  } catch {
+    return new Response('Not found', { status: 404 });
+  }
+
+  if (!chat) {
+    return new Response('Not found', { status: 404 });
+  }
+
+  if (chat.visibility === 'private' && chat.userId !== session.user.id) {
+    return new Response('Forbidden', { status: 403 });
+  }
+
+  const streamIds = await getStreamIdsByChatId({ chatId });
+
+  if (!streamIds.length) {
+    return new Response('No streams found', { status: 404 });
+  }
+
+  const recentStreamId = streamIds.at(-1);
+
+  if (!recentStreamId) {
+    return new Response('No recent stream found', { status: 404 });
+  }
+
+  const emptyDataStream = createDataStream({
+    execute: () => {},
+  });
+
+  return new Response(
+    await streamContext.resumableStream(recentStreamId, () => emptyDataStream),
+    {
+      status: 200,
+    },
+  );
+}
+
 export async function DELETE(request: Request) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id');
@@ -344,6 +414,7 @@ export async function DELETE(request: Request) {
 
     return Response.json(deletedChat, { status: 200 });
   } catch (error) {
+    console.error(error);
     return new Response('An error occurred while processing your request!', {
       status: 500,
     });

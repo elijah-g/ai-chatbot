@@ -77,10 +77,14 @@ async function createNewTable() {
                   attachments: [],
                 };
               } else if (message.role === 'assistant') {
+                const cleanParts = sanitizeParts(
+                  dedupeParts(message.parts || []),
+                );
+
                 return {
                   id: message.id,
                   chatId: chat.id,
-                  parts: message.parts || [],
+                  parts: cleanParts,
                   role: message.role,
                   createdAt: message.createdAt,
                   attachments: [],
@@ -123,7 +127,7 @@ async function createNewTable() {
   console.info(`Migration completed: ${processedCount} chats processed`);
 }
 
-createNewTable()
+migrateMessages()
   .then(() => {
     console.info('Script completed successfully');
     process.exit(0);

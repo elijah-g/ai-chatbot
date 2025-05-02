@@ -27,10 +27,12 @@ import {
   vote,
   type DBMessage,
   type Chat,
+  stream,
 } from './schema';
 import type { ArtifactKind } from '@/components/artifact';
 import { generateUUID } from '../utils';
 import { generateHashedPassword } from './utils';
+import type { VisibilityType } from '@/components/visibility-selector';
 
 // Optionally, if not using email/pass login, you can
 // use the Drizzle adapter for Auth.js / NextAuth
