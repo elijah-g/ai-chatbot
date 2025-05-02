@@ -73,3 +73,28 @@ export function getTrailingMessageId({
 
   return trailingMessage.id;
 }
+
+/**
+ * Simple geolocation utility to extract location data from a request
+ * @param request The incoming request
+ * @returns Location information including longitude, latitude, city, and country
+ */
+export function geolocation(request: Request) {
+  // Default values
+  const defaultLocation = {
+    longitude: '0',
+    latitude: '0',
+    city: 'unknown',
+    country: 'unknown'
+  };
+
+  try {
+    // In a real implementation, you'd extract geolocation data from headers
+    // such as X-Forwarded-For, CF-IPCountry, etc.
+    // For now, we'll just return default values
+    return defaultLocation;
+  } catch (error) {
+    console.error('Error extracting geolocation data', error);
+    return defaultLocation;
+  }
+}

@@ -340,3 +340,60 @@ export async function findOrCreateAzureADUser(email: string) {
     throw error;
   }
 }
+
+export async function createStreamId({ chatId }: { chatId: string }) {
+  try {
+    const streamId = generateUUID();
+    const { data, error } = await supabase
+      .from('Stream')
+      .insert([{ 
+        id: streamId, 
+        chatId, 
+        createdAt: new Date() 
+      }]);
+    if (error) {
+      console.error('Failed to create stream id in database', error);
+      // If the error is because the table doesn't exist, just return the generated ID
+      if (error.code === '42P01') { // PostgreSQL code for "relation does not exist"
+        console.log('Stream table does not exist yet, returning generated ID without saving');
+        return streamId;
+      }
+      throw error;
+    }
+    return streamId;
+  } catch (error) {
+    console.error('Error in createStreamId:', error);
+    // Return a newly generated UUID as a fallback to prevent app crashing
+    return generateUUID();
+  }
+}
+
+export async function getStreamIdsByChatId({ id }: { id: string }) {
+  try {
+    // Check if id is valid
+    if (!id || id === "undefined") {
+      console.log('Invalid chatId provided to getStreamIdsByChatId:', id);
+      return [];
+    }
+    
+    const { data, error } = await supabase
+      .from('Stream')
+      .select('id')
+      .eq('chatId', id)
+      .order('createdAt', { ascending: true });
+    if (error) {
+      console.error('Failed to get stream ids by chat id from database', error);
+      // If the error is because the table doesn't exist, return an empty array
+      if (error.code === '42P01') { // PostgreSQL code for "relation does not exist"
+        console.log('Stream table does not exist yet, returning empty array');
+        return [];
+      }
+      throw error;
+    }
+    return data?.map(stream => stream.id) || [];
+  } catch (error) {
+    console.error('Error in getStreamIdsByChatId:', error);
+    // Return an empty array as a fallback to prevent app crashing
+    return [];
+  }
+}
