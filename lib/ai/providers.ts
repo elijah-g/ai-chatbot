@@ -3,7 +3,7 @@ import {
   extractReasoningMiddleware,
   wrapLanguageModel,
 } from 'ai';
-import { xai } from '@ai-sdk/xai';
+import { bedrock } from '@ai-sdk/amazon-bedrock';
 import { isTestEnvironment } from '../constants';
 import {
   artifactModel,
@@ -23,15 +23,12 @@ export const myProvider = isTestEnvironment
     })
   : customProvider({
       languageModels: {
-        'chat-model': xai('grok-2-1212'),
-        'chat-model-reasoning': wrapLanguageModel({
-          model: xai('grok-3-mini-beta'),
-          middleware: extractReasoningMiddleware({ tagName: 'think' }),
-        }),
-        'title-model': xai('grok-2-1212'),
-        'artifact-model': xai('grok-2-1212'),
+        'chat-model': bedrock('anthropic.claude-3-5-sonnet-20241022-v2:0'),
+        'chat-model-reasoning': bedrock('anthropic.claude-3-5-haiku-20241022-v1:0'),
+        'title-model': bedrock('anthropic.claude-3-5-sonnet-20241022-v2:0'),
+        'artifact-model': bedrock('anthropic.claude-3-5-sonnet-20241022-v2:0'),
       },
       imageModels: {
-        'small-model': xai.image('grok-2-image'),
+        // No Claude 3.5 image model, so leave empty or add if needed
       },
     });

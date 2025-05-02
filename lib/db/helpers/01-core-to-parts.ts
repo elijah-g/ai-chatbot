@@ -1,29 +1,12 @@
-import { config } from 'dotenv';
-import postgres from 'postgres';
-import {
-  chat,
-  message,
-  messageDeprecated,
-  vote,
-  voteDeprecated,
-} from '../schema';
-import { drizzle } from 'drizzle-orm/postgres-js';
-import { inArray } from 'drizzle-orm';
+import { createClient } from '@supabase/supabase-js';
 import { appendResponseMessages, UIMessage } from 'ai';
 
-config({
-  path: '.env.local',
-});
+const supabaseUrl = process.env.SUPABASE_URL!;
+const supabaseKey = process.env.SUPABASE_ANON_KEY!;
+const supabase = createClient(supabaseUrl, supabaseKey);
 
-if (!process.env.POSTGRES_URL) {
-  throw new Error('POSTGRES_URL environment variable is not set');
-}
-
-const client = postgres(process.env.POSTGRES_URL);
-const db = drizzle(client);
-
-const BATCH_SIZE = 50; // Process 10 chats at a time
-const INSERT_BATCH_SIZE = 100; // Insert 100 messages at a time
+const BATCH_SIZE = 50;
+const INSERT_BATCH_SIZE = 100;
 
 type NewMessageInsert = {
   id: string;
@@ -41,74 +24,47 @@ type NewVoteInsert = {
 };
 
 async function createNewTable() {
-  const chats = await db.select().from(chat);
+  const { data: chats, error: chatError } = await supabase.from('Chat').select('*');
+  if (chatError) throw chatError;
   let processedCount = 0;
 
-  // Process chats in batches
-  for (let i = 0; i < chats.length; i += BATCH_SIZE) {
-    const chatBatch = chats.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < (chats?.length || 0); i += BATCH_SIZE) {
+    const chatBatch = chats!.slice(i, i + BATCH_SIZE);
     const chatIds = chatBatch.map((chat) => chat.id);
 
-    // Fetch all messages and votes for the current batch of chats in bulk
-    const allMessages = await db
-      .select()
-      .from(messageDeprecated)
-      .where(inArray(messageDeprecated.chatId, chatIds));
+    const { data: allMessages, error: msgError } = await supabase.from('Message').select('*').in('chatId', chatIds);
+    if (msgError) throw msgError;
+    const { data: allVotes, error: voteError } = await supabase.from('Vote').select('*').in('chatId', chatIds);
+    if (voteError) throw voteError;
 
-    const allVotes = await db
-      .select()
-      .from(voteDeprecated)
-      .where(inArray(voteDeprecated.chatId, chatIds));
+    const newMessagesToInsert = [];
+    const newVotesToInsert = [];
 
-    // Prepare batches for insertion
-    const newMessagesToInsert: NewMessageInsert[] = [];
-    const newVotesToInsert: NewVoteInsert[] = [];
-
-    // Process each chat in the batch
     for (const chat of chatBatch) {
       processedCount++;
-      console.info(`Processed ${processedCount}/${chats.length} chats`);
-
-      // Filter messages and votes for this specific chat
-      const messages = allMessages.filter((msg) => msg.chatId === chat.id);
-      const votes = allVotes.filter((v) => v.chatId === chat.id);
-
-      // Group messages into sections
-      const messageSection: Array<UIMessage> = [];
-      const messageSections: Array<Array<UIMessage>> = [];
-
+      console.info(`Processed ${processedCount}/${chats!.length} chats`);
+      const messages = (allMessages || []).filter((msg) => msg.chatId === chat.id);
+      const votes = (allVotes || []).filter((v) => v.chatId === chat.id);
+      const messageSection = [];
+      const messageSections = [];
       for (const message of messages) {
         const { role } = message;
-
         if (role === 'user' && messageSection.length > 0) {
           messageSections.push([...messageSection]);
           messageSection.length = 0;
         }
-
-        // @ts-expect-error message.content has different type
         messageSection.push(message);
       }
-
-      if (messageSection.length > 0) {
-        messageSections.push([...messageSection]);
-      }
-
-      // Process each message section
+      if (messageSection.length > 0) messageSections.push([...messageSection]);
       for (const section of messageSections) {
         const [userMessage, ...assistantMessages] = section;
-
         const [firstAssistantMessage] = assistantMessages;
-
         try {
           const uiSection = appendResponseMessages({
             messages: [userMessage],
-            // @ts-expect-error: message.content has different type
             responseMessages: assistantMessages,
-            _internal: {
-              currentDate: () => firstAssistantMessage.createdAt ?? new Date(),
-            },
+            _internal: { currentDate: () => firstAssistantMessage?.createdAt ?? new Date() },
           });
-
           const projectedUISection = uiSection
             .map((message) => {
               if (message.role === 'user') {
@@ -119,7 +75,7 @@ async function createNewTable() {
                   role: message.role,
                   createdAt: message.createdAt,
                   attachments: [],
-                } as NewMessageInsert;
+                };
               } else if (message.role === 'assistant') {
                 return {
                   id: message.id,
@@ -128,16 +84,13 @@ async function createNewTable() {
                   role: message.role,
                   createdAt: message.createdAt,
                   attachments: [],
-                } as NewMessageInsert;
+                };
               }
               return null;
             })
-            .filter((msg): msg is NewMessageInsert => msg !== null);
-
-          // Add messages to batch
+            .filter((msg) => msg !== null);
           for (const msg of projectedUISection) {
             newMessagesToInsert.push(msg);
-
             if (msg.role === 'assistant') {
               const voteByMessage = votes.find((v) => v.messageId === msg.id);
               if (voteByMessage) {
@@ -154,34 +107,19 @@ async function createNewTable() {
         }
       }
     }
-
-    // Batch insert messages
     for (let j = 0; j < newMessagesToInsert.length; j += INSERT_BATCH_SIZE) {
       const messageBatch = newMessagesToInsert.slice(j, j + INSERT_BATCH_SIZE);
       if (messageBatch.length > 0) {
-        // Ensure all required fields are present
-        const validMessageBatch = messageBatch.map((msg) => ({
-          id: msg.id,
-          chatId: msg.chatId,
-          parts: msg.parts,
-          role: msg.role,
-          attachments: msg.attachments,
-          createdAt: msg.createdAt,
-        }));
-
-        await db.insert(message).values(validMessageBatch);
+        await supabase.from('Message_v2').insert(messageBatch);
       }
     }
-
-    // Batch insert votes
     for (let j = 0; j < newVotesToInsert.length; j += INSERT_BATCH_SIZE) {
       const voteBatch = newVotesToInsert.slice(j, j + INSERT_BATCH_SIZE);
       if (voteBatch.length > 0) {
-        await db.insert(vote).values(voteBatch);
+        await supabase.from('Vote_v2').insert(voteBatch);
       }
     }
   }
-
   console.info(`Migration completed: ${processedCount} chats processed`);
 }
 

@@ -1,3 +1,6 @@
+// DEPRECATED: This file is no longer used for migrations or queries. Supabase manages schema via its dashboard or CLI.
+// Type definitions may be kept for reference if used elsewhere in the codebase.
+// Remove Drizzle-specific imports if not needed.
 import type { InferSelectModel } from 'drizzle-orm';
 import {
   pgTable,

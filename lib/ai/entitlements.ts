@@ -8,17 +8,17 @@ interface Entitlements {
 
 export const entitlementsByUserType: Record<UserType, Entitlements> = {
   /*
-   * For users without an account
+   * For users with an account
    */
-  guest: {
-    maxMessagesPerDay: 20,
+  regular: {
+    maxMessagesPerDay: 100,
     availableChatModelIds: ['chat-model', 'chat-model-reasoning'],
   },
 
   /*
-   * For users with an account
+   * For users authenticating through Azure AD
    */
-  regular: {
+  azuread: {
     maxMessagesPerDay: 100,
     availableChatModelIds: ['chat-model', 'chat-model-reasoning'],
   },

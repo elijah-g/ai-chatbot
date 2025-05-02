@@ -1,10 +1,18 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { getToken } from 'next-auth/jwt';
-import { guestRegex, isDevelopmentEnvironment } from './lib/constants';
+import { isDevelopmentEnvironment } from './lib/constants';
+
+// Routes that require authentication
+const protectedRoutes = [
+  '/chat',
+  '/api/chat',
+  '/api/history',
+  '/api/m365'
+];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-
+  
   /*
    * Playwright starts the dev server and requires a 200 status to
    * begin the tests, so this ensures that the tests can start
@@ -16,27 +24,31 @@ export async function middleware(request: NextRequest) {
   if (pathname.startsWith('/api/auth')) {
     return NextResponse.next();
   }
-
+  
   const token = await getToken({
     req: request,
     secret: process.env.AUTH_SECRET,
     secureCookie: !isDevelopmentEnvironment,
   });
-
-  if (!token) {
-    const redirectUrl = encodeURIComponent(request.url);
-
-    return NextResponse.redirect(
-      new URL(`/api/auth/guest?redirectUrl=${redirectUrl}`, request.url),
-    );
+  
+  if (token) {
+    // Redirect authenticated users away from login/register pages
+    if (['/login', '/register'].includes(pathname)) {
+      return NextResponse.redirect(new URL('/', request.url));
+    }
+    
+    // User is authenticated, allow access
+    return NextResponse.next();
   }
-
-  const isGuest = guestRegex.test(token?.email ?? '');
-
-  if (token && !isGuest && ['/login', '/register'].includes(pathname)) {
-    return NextResponse.redirect(new URL('/', request.url));
+  
+  // Check if route requires authentication
+  if (protectedRoutes.some(route => pathname.startsWith(route))) {
+    // Redirect to Azure AD login
+    const url = new URL('/api/auth/signin/azure-ad', request.url);
+    url.searchParams.set('callbackUrl', encodeURI(request.url));
+    return NextResponse.redirect(url);
   }
-
+  
   return NextResponse.next();
 }
 

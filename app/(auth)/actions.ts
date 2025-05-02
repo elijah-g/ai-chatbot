@@ -1,10 +1,12 @@
 'use server';
 
 import { z } from 'zod';
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 
 import { createUser, getUser } from '@/lib/db/queries';
 
-import { signIn } from './auth';
+import { signIn, auth } from './auth';
 
 const authFormSchema = z.object({
   email: z.string().email(),
@@ -82,3 +84,36 @@ export const register = async (
     return { status: 'failed' };
   }
 };
+
+/**
+ * Sign out the user by:
+ * 1. Getting the session
+ * 2. Clearing all auth-related cookies
+ * 3. Redirecting to the home page
+ */
+export async function signOutUser() {
+  // Get current session
+  const session = await auth();
+  
+  if (session) {
+    // Clear all auth-related cookies
+    const cookieStore = await cookies();
+    
+    // Clear standard NextAuth cookies
+    cookieStore.delete('next-auth.session-token');
+    cookieStore.delete('next-auth.callback-url');
+    cookieStore.delete('next-auth.csrf-token');
+    
+    // Clear secure versions too
+    cookieStore.delete('__Secure-next-auth.callback-url');
+    cookieStore.delete('__Secure-next-auth.session-token');
+    cookieStore.delete('__Secure-next-auth.csrf-token');
+    cookieStore.delete('__Host-next-auth.csrf-token');
+    
+    // Redirect to home page
+    redirect('/');
+  }
+  
+  // If no session, just redirect to home
+  redirect('/');
+}

@@ -1,3 +1,6 @@
+// DEPRECATED: Drizzle is no longer used. This file can be deleted if not needed for reference.
+// Supabase manages migrations and schema via its dashboard or CLI.
+
 import { config } from 'dotenv';
 import { defineConfig } from 'drizzle-kit';
 

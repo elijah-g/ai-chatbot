@@ -1,3 +1,4 @@
+-- DEPRECATED: This migration file is no longer used. Supabase manages migrations via its dashboard or CLI.
 CREATE TABLE IF NOT EXISTS "Message" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"chatId" uuid NOT NULL,

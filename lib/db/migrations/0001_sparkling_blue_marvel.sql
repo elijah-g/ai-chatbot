@@ -1,3 +1,4 @@
+-- DEPRECATED: This migration file is no longer used. Supabase manages migrations via its dashboard or CLI.
 CREATE TABLE IF NOT EXISTS "Suggestion" (
 	"id" uuid DEFAULT gen_random_uuid() NOT NULL,
 	"documentId" uuid NOT NULL,

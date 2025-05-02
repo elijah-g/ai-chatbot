@@ -1,3 +1,4 @@
+// DEPRECATED: This migration metadata file is no longer used. Supabase manages migrations via its dashboard or CLI.
 {
   "version": "7",
   "dialect": "postgresql",
