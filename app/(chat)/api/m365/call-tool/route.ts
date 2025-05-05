@@ -27,8 +27,10 @@ export async function POST(req: NextRequest) {
   console.log('[Call-Tool Debug] Request received');
   
   const session = await auth();
-  if (!session?.user?.id) {
-    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!session?.user?.id || !session.user.accessToken) {
+    const error = session?.user?.id ? 'Missing access token in session' : 'Unauthorized';
+    console.error(`[Call-Tool Error] Authorization failed: ${error}`);
+    return Response.json({ error: error }, { status: 401 });
   }
   
   try {
@@ -42,6 +44,7 @@ export async function POST(req: NextRequest) {
     // Get the session ID from the headers
     const sessionId = req.headers.get('mcp-session-id') || req.headers.get('Mcp-Session-Id');
     if (!sessionId) {
+      console.error('[Call-Tool Error] Missing Mcp-Session-Id header');
       return Response.json({ error: 'Missing session ID' }, { status: 400 });
     }
     
@@ -64,7 +67,8 @@ export async function POST(req: NextRequest) {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json, text/event-stream',
-        'Mcp-Session-Id': sessionId
+        'Mcp-Session-Id': sessionId,
+        'Authorization': `Bearer ${session.user.accessToken}`
       },
       body: JSON.stringify(toolCallPayload)
     });

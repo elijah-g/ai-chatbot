@@ -80,6 +80,7 @@ export async function POST(req: NextRequest) {
       const { client } = await getOrCreateMcpClient(session.user.id, clientId, session.user.accessToken);
 
       console.log(`[Invoke Debug] Successfully created/fetched client, invoking M365 tool: ${tool}`);
+      console.log(`[Invoke Debug] Tool: ${tool}, Params: ${JSON.stringify(params)}, AccessToken Exists: ${!!session.user.accessToken}`);
       
       // Call the tool with original parameters (no need to include azureAccessToken as it's now handled by the client)
       const result = await client.callTool({

@@ -266,7 +266,13 @@ export async function POST(request: Request) {
       ? []
       : await getAvailableMcpTools();
     
-    console.log('[MCP DEBUG] Active tools for this chat:', activeTools);
+    // Filter out login-related tools as they're not needed - the user is already authenticated
+    const filteredActiveTools = activeTools.filter(tool => 
+      !tool.includes('login') && !tool.includes('verify-login')
+    );
+    
+    console.log('[MCP DEBUG] Original active tools:', activeTools);
+    console.log('[MCP DEBUG] Filtered active tools (removed login tools):', filteredActiveTools);
     console.log('[MCP DEBUG] Selected chat model:', selectedChatModel);
 
     // Create an enhanced system prompt that mentions available tools
@@ -279,7 +285,29 @@ export async function POST(request: Request) {
 You have access to the following Microsoft 365 tools that you can use:
 ${toolNames.map(tool => `- ${tool}: Use this to interact with Microsoft 365`).join('\n')}
 
-When a user asks about their emails, calendar, or other Microsoft 365 data, use the appropriate tool to help them.
+IMPORTANT: The user is ALREADY AUTHENTICATED with Microsoft 365. DO NOT attempt to verify login status or authenticate the user. 
+The authentication token is automatically passed with each tool call. Assume the user is logged in and proceed directly to accessing their data.
+
+TOOL RESPONSE HANDLING INSTRUCTIONS:
+1. When you call a tool, you'll receive a response containing the data requested.
+2. ALWAYS examine the tool response carefully to understand its structure and extract relevant information.
+3. If the response is complex or contains multiple items, summarize the content in a user-friendly way.
+4. If needed, make follow-up tool calls to get more details about specific items from the initial response.
+5. Present the final information in a clear, conversational manner.
+
+MULTI-STEP WORKFLOWS:
+- For complex tasks, break them down into sequential tool calls.
+- After each tool call, analyze the response and determine the next step.
+- Continue until you have all information needed to fully answer the user's request.
+- Maintain the conversational flow while executing multiple steps.
+
+When a user asks about their emails, calendar, or other Microsoft 365 data, use the appropriate tool DIRECTLY to help them 
+without first checking login status.
+
+Examples:
+- If user asks "Show me my recent emails" → Use mcp_ms365_list-mail-messages directly, then extract and display sender, subject, and date for each email
+- If user asks "What's on my calendar today" → Use mcp_ms365_list-calendar-events directly, then format each event with time, title, and attendees
+- If user asks "Get my last email" → Use mcp_ms365_list-mail-messages with {top: 1}, then use mcp_ms365_get-mail-message to get full details if needed
 `;
       
       return `${basePrompt}\n\n${toolsPrompt}`;
@@ -311,11 +339,13 @@ When a user asks about their emails, calendar, or other Microsoft 365 data, use 
         if (toolName.includes('ms365')) {
           // Provide more detailed descriptions for MS365 tools
           if (toolName.includes('mail')) {
-            description = `Call Microsoft 365 tool to manage emails`;
+            description = `Call Microsoft 365 tool to access or manage user's emails`;
           } else if (toolName.includes('calendar')) {
-            description = `Call Microsoft 365 tool to manage calendar events`;
+            description = `Call Microsoft 365 tool to access or manage user's calendar events`;
           } else if (toolName.includes('login')) {
-            description = `Authenticate with Microsoft 365`;
+            description = `Authentication with Microsoft 365 (NOTE: User is already authenticated, use other tools directly)`;
+          } else if (toolName.includes('verify-login')) {
+            description = `Check login status with Microsoft 365 (NOTE: User is already authenticated, use other tools directly)`;
           }
         }
         
@@ -328,7 +358,7 @@ When a user asks about their emails, calendar, or other Microsoft 365 data, use 
           }
         };
         
-        console.log(`[MCP DEBUG] Formatted tool for AI: ${toolName}`, JSON.stringify(toolObj));
+        // console.log(`[MCP DEBUG] Formatted tool for AI: ${toolName}`, JSON.stringify(toolObj));
         return toolObj;
       });
       
@@ -337,15 +367,15 @@ When a user asks about their emails, calendar, or other Microsoft 365 data, use 
     }
 
     // Log the experimental_activeTools to verify they're properly configured
-    const formattedActiveTools = formatToolsForAI(activeTools);
+    const formattedActiveTools = formatToolsForAI(filteredActiveTools);
     console.log(`[MCP DEBUG] Formatted active tools length: ${formattedActiveTools.length}`);
     
     // Debug tool configuration for AI library
     const streamTextConfig = {
       model: myProvider.languageModel(selectedChatModel),
-      system: getEnhancedSystemPrompt(systemPrompt({ selectedChatModel, requestHints }), activeTools),
+      system: getEnhancedSystemPrompt(systemPrompt({ selectedChatModel, requestHints }), filteredActiveTools),
       messages: formattedMessages,
-      maxSteps: 5,
+      maxSteps: 10,
       experimental_activeTools: formattedActiveTools,
       experimental_transform: smoothStream({ chunking: 'word' }),
       experimental_generateMessageId: generateUUID,
@@ -361,7 +391,7 @@ When a user asks about their emails, calendar, or other Microsoft 365 data, use 
     });
     
     // Create tool implementations map
-    const toolImplementations = activeTools.reduce((acc: Record<string, any>, toolName: string) => {
+    const toolImplementations = filteredActiveTools.reduce((acc: Record<string, any>, toolName: string) => {
       // Create a tool function for each M365 tool that uses the MCP server
       console.log(`[MCP DEBUG] Setting up tool implementation for: ${toolName}`);
       
@@ -375,17 +405,38 @@ When a user asks about their emails, calendar, or other Microsoft 365 data, use 
           const serverClientId = `server_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
           console.log(`[MCP DEBUG] Generated serverClientId: ${serverClientId}`);
           
-          // Create or get an MCP client for this request 
-          // Pass the access token if available (when user is authenticated with Azure AD)
+          // Get access token from session if available
           const accessToken = session.user.type === 'azuread' ? session.user.accessToken : undefined;
-          console.log(`[DEBUG] Session user type: ${session.user.type}, accessToken available: ${!!accessToken}`);
+          console.log(`[MCP DEBUG] Session user type: ${session.user.type}, accessToken available: ${!!accessToken}`);
           
-          console.log(`[DEBUG] About to call getOrCreateMcpClient with serverClientId: ${serverClientId}`);
-          const mcpClientResult = await getOrCreateMcpClient(serverClientId, undefined, accessToken);
-          console.log(`[DEBUG] getOrCreateMcpClient result:`, JSON.stringify({
-            clientAvailable: !!mcpClientResult?.client,
-            sessionId: mcpClientResult?.sessionId
-          }));
+          if (!accessToken) {
+            console.log(`[MCP DEBUG] WARNING: No access token available for user type ${session.user.type}`);
+            if (toolName.includes('login') || toolName.includes('verify-login')) {
+              console.log(`[MCP DEBUG] Login/verification tool called, but access token should be used automatically`);
+            }
+          } else {
+            console.log(`[MCP DEBUG] Access token available and will be used for authentication`);
+          }
+          
+          console.log(`[MCP DEBUG] About to call getOrCreateMcpClient with serverClientId: ${serverClientId}`);
+          
+          let mcpClientResult;
+          try {
+            mcpClientResult = await getOrCreateMcpClient(serverClientId, undefined, accessToken);
+            console.log(`[MCP DEBUG] getOrCreateMcpClient result:`, JSON.stringify({
+              clientAvailable: !!mcpClientResult?.client,
+              sessionId: mcpClientResult?.sessionId,
+              accessTokenUsed: !!accessToken
+            }));
+          } catch (clientErr: any) {
+            console.error(`[MCP DEBUG] Error creating MCP client: ${clientErr.message}`);
+            console.error(`[MCP DEBUG] Client error stack: ${clientErr.stack || 'No stack available'}`);
+            throw new Error(`Failed to initialize MCP client: ${clientErr.message}`);
+          }
+          
+          if (!mcpClientResult?.client) {
+            throw new Error(`MCP client creation failed - no client returned`);
+          }
           
           const { client } = mcpClientResult;
           
@@ -397,7 +448,26 @@ When a user asks about their emails, calendar, or other Microsoft 365 data, use 
               arguments: params || {}
             });
             
-            console.log(`[DEBUG] Tool ${toolName} execution successful:`, result);
+            // Enhanced logging for tool responses
+            console.log(`[MCP DEBUG] Tool ${toolName} execution successful`);
+            try {
+              // Try to log a summary of the tool response
+              if (result && typeof result === 'object') {
+                if (Array.isArray(result)) {
+                  console.log(`[MCP DEBUG] Tool response is an array with ${result.length} items`);
+                  if (result.length > 0 && typeof result[0] === 'object') {
+                    console.log(`[MCP DEBUG] First item keys: ${Object.keys(result[0]).join(', ')}`);
+                  }
+                } else {
+                  console.log(`[MCP DEBUG] Tool response keys: ${Object.keys(result).join(', ')}`);
+                }
+              } else {
+                console.log(`[MCP DEBUG] Tool response type: ${typeof result}`);
+              }
+            } catch (err: any) {
+              console.log(`[MCP DEBUG] Error summarizing tool response: ${err.message}`);
+            }
+            
             // Return the result
             return result;
           } finally {
@@ -445,7 +515,7 @@ When a user asks about their emails, calendar, or other Microsoft 365 data, use 
               console.log('[MCP DEBUG] Detected tool calls for tools:', (response as any).toolCalls.map((tc: any) => tc.name).join(', '));
             } else {
               console.log('[MCP DEBUG] No tool calls were made in this response');
-              console.log('[MCP DEBUG] Available tools were:', activeTools.join(', '));
+              console.log('[MCP DEBUG] Available tools were:', filteredActiveTools.join(', '));
               console.log('[MCP DEBUG] The selected model was:', selectedChatModel);
             }
             
@@ -503,10 +573,17 @@ When a user asks about their emails, calendar, or other Microsoft 365 data, use 
         if (error instanceof Error) {
           console.error('[DEBUG] Error message:', error.message);
           console.error('[DEBUG] Error stack:', error.stack);
+          
+          // Provide better error messaging based on error type
+          if (error.message.includes('MCP') || error.message.includes('tool')) {
+            return 'There was an error connecting to Microsoft 365. Please make sure you are logged in and try again.';
+          } else if (error.message.includes('bedrock') || error.message.includes('model')) {
+            return 'There was an error with the AI service. Please try again later.';
+          }
         } else {
           console.error('[DEBUG] Non-Error object thrown:', error);
         }
-        return 'Oops, an error occurred!';
+        return 'An error occurred while processing your request. Please try again.';
       },
     });
   } catch (error) {
@@ -515,10 +592,17 @@ When a user asks about their emails, calendar, or other Microsoft 365 data, use 
     if (error instanceof Error) {
       console.error('[DEBUG] Error message:', error.message);
       console.error('[DEBUG] Error stack:', error.stack);
+      
+      // Provide better error messaging based on error type
+      if (error.message.includes('MCP') || error.message.includes('tool')) {
+        return new Response('There was an error connecting to Microsoft 365. Please make sure you are logged in and try again.', { status: 500 });
+      } else if (error.message.includes('bedrock') || error.message.includes('model')) {
+        return new Response('There was an error with the AI service. Please try again later.', { status: 500 });
+      }
     } else {
       console.error('[DEBUG] Non-Error object thrown:', error);
     }
-    return new Response('An error occurred while processing your request!', {
+    return new Response('An error occurred while processing your request. Please try again.', {
       status: 500,
     });
   }
