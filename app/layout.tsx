@@ -5,7 +5,7 @@ import { ThemeProvider } from '@/components/theme-provider';
 
 import './globals.css';
 import { SessionProvider } from 'next-auth/react';
-import { M365McpProvider } from '@/components/m365-mcp-provider';
+// import { M365McpProvider } from '@/components/m365-mcp-provider';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://chat.vercel.ai'),
@@ -80,9 +80,9 @@ export default async function RootLayout({
         >
           <Toaster position="top-center" />
           <SessionProvider>
-            <M365McpProvider>
+            {/* <M365McpProvider> */}
               {children}
-            </M365McpProvider>
+            {/* </M365McpProvider> */}
           </SessionProvider>
         </ThemeProvider>
       </body>

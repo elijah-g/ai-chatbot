@@ -5,6 +5,9 @@ import {
   smoothStream,
   streamText,
 } from 'ai';
+import { getOrCreateMcpClient, disconnectMcpClient } from '@/lib/ai/mcp/client';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { z } from 'zod';
 import { auth, type UserType } from '@/app/(auth)/auth';
 import { type RequestHints, systemPrompt } from '@/lib/ai/prompts';
 import {
@@ -22,7 +25,6 @@ import { generateTitleFromUserMessage } from '../../actions';
 import { isProductionEnvironment } from '@/lib/constants';
 import { myProvider } from '@/lib/ai/providers';
 import { entitlementsByUserType } from '@/lib/ai/entitlements';
-import { getOrCreateMcpClient, disconnectMcpClient, checkMcpServerTools } from '../m365/client';
 
 // For type definitions
 interface UIMessage {
@@ -41,11 +43,18 @@ type Chat = {
 
 // Define a createDataStreamResponse function using createDataStream
 function createDataStreamResponse({ execute, onError }: { 
-  execute: (dataStream: any) => void, 
+  execute: (dataStream: any) => Promise<void>,
   onError: (error: any) => string 
 }) {
-  const dataStream = createDataStream({ execute });
-  return new Response(dataStream, { status: 200 });
+  const dataStream = createDataStream({ 
+    execute: execute,
+    onError: onError,
+  });
+  return new Response(dataStream, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+    }
+  });
 }
 
 // Helper function to get the most recent user message
@@ -64,53 +73,151 @@ function getMostRecentUserMessage(messages: UIMessage[]): UIMessage | undefined 
   return messages.filter(m => m.role === 'user').pop();
 }
 
-// MS 365 MCP server URL - ensure URL has proper scheme
-let MS365_MCP_URL = process.env.MCP_SERVER_URL || process.env.MS365_MCP_URL || process.env.NEXT_PUBLIC_MS365_MCP_URL || 'http://localhost:8080';
-// Ensure URL has proper scheme
-if (!MS365_MCP_URL.match(/^https?:\/\//i)) {
-  MS365_MCP_URL = `http://${MS365_MCP_URL}`;
-}
-console.log('[MCP Debug] Using MS365 MCP server URL:', MS365_MCP_URL);
-
 export const maxDuration = 60;
 
 /**
- * Get available tools from MCP server
+ * Check if messages contain any problematic tool invocations
  */
-async function getAvailableMcpTools() {
+function hasProblematicToolInvocations(messages: any[]): boolean {
   try {
-    console.log('[MCP DEBUG] Starting getAvailableMcpTools function');
-    console.log('[MCP DEBUG] MCP server URL:', MS365_MCP_URL);
-    
-    // Check the MCP server and get tools directly
-    console.log('[MCP DEBUG] About to call checkMcpServerTools');
-    const serverToolsResult = await checkMcpServerTools();
-    console.log('[MCP DEBUG] checkMcpServerTools result:', JSON.stringify(serverToolsResult));
-    
-    const { available, tools } = serverToolsResult;
-    
-    if (available && Array.isArray(tools)) {
-      console.log('[MCP DEBUG] MCP server available with tools:', tools);
-      return tools;
+    for (const message of messages) {
+      if (!message?.parts || !Array.isArray(message.parts)) {
+        continue;
+      }
+
+      const toolCalls = new Map<string, { hasCall: boolean; hasResult: boolean }>();
+      
+      // Track all tool calls and their states
+      for (const part of message.parts) {
+        if (part?.type === 'tool-invocation' && part.toolInvocation?.toolCallId) {
+          const toolCallId = part.toolInvocation.toolCallId;
+          const state = part.toolInvocation.state;
+          
+          if (!toolCalls.has(toolCallId)) {
+            toolCalls.set(toolCallId, { hasCall: false, hasResult: false });
+          }
+          
+          const toolCall = toolCalls.get(toolCallId)!;
+          if (state === 'call') {
+            toolCall.hasCall = true;
+          } else if (state === 'result') {
+            toolCall.hasResult = true;
+          }
+        }
+      }
+      
+      // Check for incomplete tool calls
+      for (const [toolCallId, { hasCall, hasResult }] of toolCalls) {
+        if (hasCall && !hasResult) {
+          console.log(`[DEBUG] Found problematic tool call: ${toolCallId}`);
+          return true;
+        }
+      }
     }
-    
-    console.log('[MCP DEBUG] MCP server not available or no tools found', {
-      available,
-      toolsIsArray: Array.isArray(tools),
-      toolsLength: Array.isArray(tools) ? tools.length : 'N/A'
-    });
-    return [];
+    return false;
   } catch (error) {
-    console.error('[MCP DEBUG] Error in getAvailableMcpTools:', error);
-    // Log the full error details including stack trace
-    if (error instanceof Error) {
-      console.error('[MCP DEBUG] Error message:', error.message);
-      console.error('[MCP DEBUG] Error stack:', error.stack);
-    } else {
-      console.error('[MCP DEBUG] Non-Error object thrown:', error);
-    }
-    return [];
+    console.error('[ERROR] Error checking for problematic tool invocations:', error);
+    return false;
   }
+}
+
+/**
+ * Clean up incomplete tool invocations from messages
+ * This prevents the AI_MessageConversionError when tool calls don't have results
+ */
+function cleanupIncompleteToolInvocations(messages: any[]): any[] {
+  try {
+    return messages.map(message => {
+      if (!message || !message.parts || !Array.isArray(message.parts)) {
+        return message;
+      }
+
+      // Track tool call IDs that have results
+      const toolCallsWithResults = new Set<string>();
+      
+      // First pass: find all tool calls that have results
+      message.parts.forEach((part: any) => {
+        if (part?.type === 'tool-invocation' && 
+            part.toolInvocation?.state === 'result' && 
+            part.toolInvocation?.toolCallId) {
+          toolCallsWithResults.add(part.toolInvocation.toolCallId);
+        }
+      });
+
+      // Second pass: filter out tool calls that don't have results
+      const cleanedParts = message.parts.filter((part: any) => {
+        if (part?.type === 'tool-invocation' && 
+            part.toolInvocation?.state === 'call' && 
+            part.toolInvocation?.toolCallId) {
+          const hasResult = toolCallsWithResults.has(part.toolInvocation.toolCallId);
+          if (!hasResult) {
+            console.log(`[DEBUG] Removing incomplete tool call: ${part.toolInvocation.toolName || 'unknown'} (${part.toolInvocation.toolCallId})`);
+            return false;
+          }
+        }
+        return true;
+      });
+
+      return {
+        ...message,
+        parts: cleanedParts
+      };
+    });
+  } catch (error) {
+    console.error('[ERROR] Failed to cleanup incomplete tool invocations:', error);
+    // Return original messages if cleanup fails
+    return messages;
+  }
+}
+
+/**
+ * Convert MCP tool input schema to Zod schema
+ */
+function convertMcpSchemaToZod(inputSchema: any): z.ZodType<any> {
+  console.log(`[DEBUG] Converting MCP schema to Zod:`, JSON.stringify(inputSchema, null, 2));
+  
+  if (!inputSchema || typeof inputSchema !== 'object') {
+    console.log(`[DEBUG] No input schema or invalid type, using passthrough`);
+    return z.object({}).passthrough();
+  }
+
+  if (inputSchema.type === 'object' && inputSchema.properties) {
+    const zodObject: Record<string, z.ZodType<any>> = {};
+    
+    for (const [key, prop] of Object.entries(inputSchema.properties)) {
+      const property = prop as any;
+      
+      switch (property.type) {
+        case 'string':
+          zodObject[key] = z.string();
+          break;
+        case 'number':
+          zodObject[key] = z.number();
+          break;
+        case 'boolean':
+          zodObject[key] = z.boolean();
+          break;
+        case 'array':
+          zodObject[key] = z.array(z.any());
+          break;
+        default:
+          zodObject[key] = z.any();
+      }
+      
+      // Handle optional vs required fields
+      if (!inputSchema.required || !inputSchema.required.includes(key)) {
+        zodObject[key] = zodObject[key].optional();
+      }
+    }
+    
+    console.log(`[DEBUG] Created Zod schema with properties:`, Object.keys(zodObject));
+    console.log(`[DEBUG] Required fields:`, inputSchema.required || []);
+    return z.object(zodObject);
+  }
+  
+  // Fallback to passthrough for unknown schemas
+  console.log(`[DEBUG] Unknown schema structure, using passthrough`);
+  return z.object({}).passthrough();
 }
 
 export async function POST(request: Request) {
@@ -226,6 +333,18 @@ export async function POST(request: Request) {
       message: userMessage,
     });
 
+    // Clean up incomplete tool invocations to prevent AI_MessageConversionError
+    console.log(`[DEBUG] Processing ${formattedMessages.length} messages for tool invocation cleanup`);
+    
+    // Check for problematic tool invocations before cleanup
+    const hasProblems = hasProblematicToolInvocations(formattedMessages);
+    if (hasProblems) {
+      console.log(`[DEBUG] Found problematic tool invocations in messages, applying cleanup`);
+    }
+    
+    const cleanedMessages = cleanupIncompleteToolInvocations(formattedMessages);
+    console.log(`[DEBUG] Applied cleanup to ${formattedMessages.length} messages to remove incomplete tool invocations`);
+
     const { longitude, latitude, city, country } = geolocation(request);
 
     const requestHints: RequestHints = {
@@ -261,323 +380,195 @@ export async function POST(request: Request) {
       // Continue processing even if stream ID creation fails
     }
 
-    // Get available tools from MCP server
-    const activeTools = selectedChatModel === 'chat-model-reasoning'
-      ? []
-      : await getAvailableMcpTools();
-    
-    // Filter out login-related tools as they're not needed - the user is already authenticated
-    const filteredActiveTools = activeTools.filter(tool => 
-      !tool.includes('login') && !tool.includes('verify-login')
-    );
-    
-    console.log('[MCP DEBUG] Original active tools:', activeTools);
-    console.log('[MCP DEBUG] Filtered active tools (removed login tools):', filteredActiveTools);
-    console.log('[MCP DEBUG] Selected chat model:', selectedChatModel);
-
-    // Create an enhanced system prompt that mentions available tools
-    function getEnhancedSystemPrompt(basePrompt: string, toolNames: string[]): string {
-      if (!toolNames || toolNames.length === 0) {
-        return basePrompt;
-      }
-      
-      const toolsPrompt = `
-You have access to the following Microsoft 365 tools that you can use:
-${toolNames.map(tool => `- ${tool}: Use this to interact with Microsoft 365`).join('\n')}
-
-IMPORTANT: The user is ALREADY AUTHENTICATED with Microsoft 365. DO NOT attempt to verify login status or authenticate the user. 
-The authentication token is automatically passed with each tool call. Assume the user is logged in and proceed directly to accessing their data.
-
-TOOL RESPONSE HANDLING INSTRUCTIONS:
-1. When you call a tool, you'll receive a response containing the data requested.
-2. ALWAYS examine the tool response carefully to understand its structure and extract relevant information.
-3. If the response is complex or contains multiple items, summarize the content in a user-friendly way.
-4. If needed, make follow-up tool calls to get more details about specific items from the initial response.
-5. Present the final information in a clear, conversational manner.
-
-MULTI-STEP WORKFLOWS:
-- For complex tasks, break them down into sequential tool calls.
-- After each tool call, analyze the response and determine the next step.
-- Continue until you have all information needed to fully answer the user's request.
-- Maintain the conversational flow while executing multiple steps.
-
-When a user asks about their emails, calendar, or other Microsoft 365 data, use the appropriate tool DIRECTLY to help them 
-without first checking login status.
-
-Examples:
-- If user asks "Show me my recent emails" → Use mcp_ms365_list-mail-messages directly, then extract and display sender, subject, and date for each email
-- If user asks "What's on my calendar today" → Use mcp_ms365_list-calendar-events directly, then format each event with time, title, and attendees
-- If user asks "Get my last email" → Use mcp_ms365_list-mail-messages with {top: 1}, then use mcp_ms365_get-mail-message to get full details if needed
-`;
-      
-      return `${basePrompt}\n\n${toolsPrompt}`;
-    }
-
-    // This function transforms MCP tools into a format compatible with the AI library
-    function formatToolsForAI(toolNames: string[]): any[] {
-      if (!toolNames || !Array.isArray(toolNames) || toolNames.length === 0) {
-        console.log('[MCP DEBUG] No tools to format for AI, returning empty array');
-        return [];
-      }
-      
-      const formattedTools = toolNames.map((toolName: string) => {
-        // Create a more detailed schema based on the tool name
-        let parameters = {
-          type: "object",
-          properties: {
-            arguments: {
-              type: "object",
-              additionalProperties: true
-            }
-          },
-          required: ["arguments"]
-        };
-        
-        // Add more specific descriptions for known tools
-        let description = `Call the ${toolName} tool`;
-        
-        if (toolName.includes('ms365')) {
-          // Provide more detailed descriptions for MS365 tools
-          if (toolName.includes('mail')) {
-            description = `Call Microsoft 365 tool to access or manage user's emails`;
-          } else if (toolName.includes('calendar')) {
-            description = `Call Microsoft 365 tool to access or manage user's calendar events`;
-          } else if (toolName.includes('login')) {
-            description = `Authentication with Microsoft 365 (NOTE: User is already authenticated, use other tools directly)`;
-          } else if (toolName.includes('verify-login')) {
-            description = `Check login status with Microsoft 365 (NOTE: User is already authenticated, use other tools directly)`;
-          }
-        }
-        
-        const toolObj = {
-          type: "function",
-          function: {
-            name: toolName,
-            description: description,
-            parameters: parameters
-          }
-        };
-        
-        // console.log(`[MCP DEBUG] Formatted tool for AI: ${toolName}`, JSON.stringify(toolObj));
-        return toolObj;
-      });
-      
-      console.log(`[MCP DEBUG] Total formatted tools: ${formattedTools.length}`);
-      return formattedTools;
-    }
-
-    // Log the experimental_activeTools to verify they're properly configured
-    const formattedActiveTools = formatToolsForAI(filteredActiveTools);
-    console.log(`[MCP DEBUG] Formatted active tools length: ${formattedActiveTools.length}`);
-    
     // Debug tool configuration for AI library
     const streamTextConfig = {
       model: myProvider.languageModel(selectedChatModel),
-      system: getEnhancedSystemPrompt(systemPrompt({ selectedChatModel, requestHints }), filteredActiveTools),
-      messages: formattedMessages,
+      // Use the base system prompt directly
+      system: systemPrompt({ selectedChatModel, requestHints }), 
+      messages: cleanedMessages,
       maxSteps: 10,
-      experimental_activeTools: formattedActiveTools,
       experimental_transform: smoothStream({ chunking: 'word' }),
       experimental_generateMessageId: generateUUID,
     };
-    
-    console.log('[MCP DEBUG] StreamText configuration:', {
-      modelName: selectedChatModel,
-      hasSystem: !!streamTextConfig.system,
-      messageCount: streamTextConfig.messages.length,
-      maxSteps: streamTextConfig.maxSteps,
-      activeToolsCount: streamTextConfig.experimental_activeTools.length,
-      systemPromptPreview: streamTextConfig.system.substring(0, 100) + '...',
-    });
-    
-    // Create tool implementations map
-    const toolImplementations = filteredActiveTools.reduce((acc: Record<string, any>, toolName: string) => {
-      // Create a tool function for each M365 tool that uses the MCP server
-      console.log(`[MCP DEBUG] Setting up tool implementation for: ${toolName}`);
-      
-      acc[toolName] = async (params: any) => {
-        console.log(`[MCP DEBUG] Tool '${toolName}' was called with params:`, JSON.stringify(params));
-        try {
-          console.log(`[MCP DEBUG] Invoking M365 tool: ${toolName} with params:`, JSON.stringify(params));
-          
-          // Use our MCP client instead of direct HTTP requests
-          // Generate a unique server-side client ID for anonymous tool calls from the AI
-          const serverClientId = `server_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-          console.log(`[MCP DEBUG] Generated serverClientId: ${serverClientId}`);
-          
-          // Get access token from session if available
-          const accessToken = session.user.type === 'azuread' ? session.user.accessToken : undefined;
-          console.log(`[MCP DEBUG] Session user type: ${session.user.type}, accessToken available: ${!!accessToken}`);
-          
-          if (!accessToken) {
-            console.log(`[MCP DEBUG] WARNING: No access token available for user type ${session.user.type}`);
-            if (toolName.includes('login') || toolName.includes('verify-login')) {
-              console.log(`[MCP DEBUG] Login/verification tool called, but access token should be used automatically`);
-            }
-          } else {
-            console.log(`[MCP DEBUG] Access token available and will be used for authentication`);
-          }
-          
-          console.log(`[MCP DEBUG] About to call getOrCreateMcpClient with serverClientId: ${serverClientId}`);
-          
-          let mcpClientResult;
-          try {
-            mcpClientResult = await getOrCreateMcpClient(serverClientId, undefined, accessToken);
-            console.log(`[MCP DEBUG] getOrCreateMcpClient result:`, JSON.stringify({
-              clientAvailable: !!mcpClientResult?.client,
-              sessionId: mcpClientResult?.sessionId,
-              accessTokenUsed: !!accessToken
-            }));
-          } catch (clientErr: any) {
-            console.error(`[MCP DEBUG] Error creating MCP client: ${clientErr.message}`);
-            console.error(`[MCP DEBUG] Client error stack: ${clientErr.stack || 'No stack available'}`);
-            throw new Error(`Failed to initialize MCP client: ${clientErr.message}`);
-          }
-          
-          if (!mcpClientResult?.client) {
-            throw new Error(`MCP client creation failed - no client returned`);
-          }
-          
-          const { client } = mcpClientResult;
-          
-          try {
-            // Call the tool using the proper callTool method
-            console.log(`[DEBUG] About to call client.callTool for ${toolName}`);
-            const result = await client.callTool({
-              name: toolName,
-              arguments: params || {}
-            });
-            
-            // Enhanced logging for tool responses
-            console.log(`[MCP DEBUG] Tool ${toolName} execution successful`);
-            try {
-              // Try to log a summary of the tool response
-              if (result && typeof result === 'object') {
-                if (Array.isArray(result)) {
-                  console.log(`[MCP DEBUG] Tool response is an array with ${result.length} items`);
-                  if (result.length > 0 && typeof result[0] === 'object') {
-                    console.log(`[MCP DEBUG] First item keys: ${Object.keys(result[0]).join(', ')}`);
-                  }
-                } else {
-                  console.log(`[MCP DEBUG] Tool response keys: ${Object.keys(result).join(', ')}`);
-                }
-              } else {
-                console.log(`[MCP DEBUG] Tool response type: ${typeof result}`);
-              }
-            } catch (err: any) {
-              console.log(`[MCP DEBUG] Error summarizing tool response: ${err.message}`);
-            }
-            
-            // Return the result
-            return result;
-          } finally {
-            // Clean up the client connection when done
-            console.log(`[DEBUG] Cleaning up client connection for ${serverClientId}`);
-            await disconnectMcpClient(serverClientId).catch(err => {
-              console.warn(`[DEBUG] Error disconnecting MCP client: ${err.message}`);
-            });
-          }
-        } catch (error: any) {
-          console.error(`[DEBUG] Error executing M365 tool ${toolName}:`, error);
-          if (error instanceof Error) {
-            console.error(`[DEBUG] Error message: ${error.message}`);
-            console.error(`[DEBUG] Error stack: ${error.stack}`);
-          } else {
-            console.error(`[DEBUG] Non-Error object thrown:`, error);
-          }
-          return { error: `Failed to execute M365 tool: ${error.message}` };
-        }
-      };
-      return acc;
-    }, {});
 
     return createDataStreamResponse({
-      execute: (dataStream) => {
-        // Debug the full tools configuration
-        console.log('[MCP DEBUG] Final streamText tool configuration:', {
-          activeToolsCount: streamTextConfig.experimental_activeTools.length,
-          implementationsCount: Object.keys(toolImplementations).length,
-          toolNames: Object.keys(toolImplementations),
-        });
-        
-        const result = streamText({
-          ...streamTextConfig,
-          tools: toolImplementations,
-          toolChoice: "auto",
-          onFinish: async ({ response }) => {
-            // Debug any reasoning or tool calls that were made during generation
-            if ((response as any).reasoning) {
-              console.log('[MCP DEBUG] Response included reasoning:', (response as any).reasoning);
-            }
-            
-            if ((response as any).toolCalls && (response as any).toolCalls.length > 0) {
-              console.log('[MCP DEBUG] Response included tool calls:', JSON.stringify((response as any).toolCalls));
-              console.log('[MCP DEBUG] Detected tool calls for tools:', (response as any).toolCalls.map((tc: any) => tc.name).join(', '));
-            } else {
-              console.log('[MCP DEBUG] No tool calls were made in this response');
-              console.log('[MCP DEBUG] Available tools were:', filteredActiveTools.join(', '));
-              console.log('[MCP DEBUG] The selected model was:', selectedChatModel);
-            }
-            
-            if (session.user?.id) {
-              try {
-                const assistantId = getTrailingMessageId({
-                  messages: response.messages.filter(
-                    (message) => message.role === 'assistant',
-                  ),
-                });
+      execute: async (dataStream) => {
+        let mcpConnection: { client: Client; sessionId?: string } | undefined; // To store the connection object
+        const userId = session?.user?.id!; // Assuming session and user.id are validated before this point
+        const accessToken = (session as any)?.user?.accessToken; // Optional access token
 
-                if (!assistantId) {
-                  throw new Error('No assistant message found!');
+        try {
+          const mcpServerUrl = process.env.MCP_SERVER_URL;
+          console.log(`[DEBUG] MCP Server URL from env: ${mcpServerUrl}`);
+          if (!mcpServerUrl) {
+            console.error('[ERROR] MCP_SERVER_URL environment variable is not set.');
+            throw new Error('MCP_SERVER_URL is not configured.');
+          }
+
+          console.log(`[DEBUG] Attempting to get or create MCP client for user ${userId}`);
+          // TODO: For true multi-request session persistence, store and retrieve mcpConnection.sessionId
+          mcpConnection = await getOrCreateMcpClient(mcpServerUrl, userId, undefined /* Pass stored sessionId here */, accessToken);
+          
+          if (!mcpConnection || !mcpConnection.client) {
+            console.error('[ERROR] Failed to get or create MCP client.');
+            throw new Error('Failed to establish MCP connection.');
+          }
+          const { client } = mcpConnection; // Use the client from the connection object
+          console.log(`[DEBUG] MCP Client obtained. Session ID: ${mcpConnection.sessionId}`);
+
+          // The explicit client.connect() is no longer needed as getOrCreateMcpClient handles it.
+          // The explicit client.listTools() is also likely not needed here,
+          // as initialize() within connect() should handle basic setup.
+          // If serverTools are truly needed for constructing streamTextTools, call client.listTools() here.
+          // For now, assuming tools are fetched if necessary or client is ready.
+
+          console.log('[DEBUG] Listing tools from MCP server...');
+          const serverToolsResponse = await client.listTools(); // Get the response object
+          console.log('[DEBUG] Raw listTools response:', JSON.stringify(serverToolsResponse, null, 2));
+          const serverTools = serverToolsResponse.tools || []; // Extract the tools array
+          console.log(`[DEBUG] Received ${serverTools.length} tools from server.`);
+          if (!Array.isArray(serverTools)) {
+            console.warn('[WARN] serverTools is not an array. Proceeding without dynamic tools.');
+          } else {
+            console.log('[DEBUG] Tool names:', serverTools.map(tool => tool.name));
+          }
+
+
+          const streamTextTools: Record<string, any> = {};
+          // Ensure serverTools is an array before iterating
+          if (Array.isArray(serverTools)) {
+            for (const toolDefinition of serverTools) {
+              const toolName = toolDefinition.name;
+              console.log(`[DEBUG] Processing tool: ${toolName}`);
+              console.log(`[DEBUG] Tool input schema:`, JSON.stringify(toolDefinition.inputSchema, null, 2));
+              streamTextTools[toolName] = {
+                description: toolDefinition.description,
+                parameters: convertMcpSchemaToZod(toolDefinition.inputSchema), 
+                execute: async (args: any) => {
+                  console.log(`[DEBUG] Executing tool '${toolName}' via MCP Client with args:`, args);
+                  // Client is already obtained from mcpConnection
+                  
+                  if (!client) {
+                     throw new Error("MCP Client is not available");
+                  }
+                  try {
+                    const result = await client.callTool({
+                      name: toolName,
+                      arguments: args,
+                    });
+                    console.log(`[DEBUG] Tool '${toolName}' execution result:`, result);
+                    return result.result ?? result; 
+                  } catch (toolError) {
+                    console.error(`[ERROR] Error executing tool '${toolName}':`, toolError);
+                    throw toolError;
+                  }
+                },
+              };
+            }
+          }
+          console.log('[DEBUG] Finished building tools for streamText.');
+
+          // Call streamText with the dynamically built tools
+          const result = streamText({
+            ...streamTextConfig,
+            tools: streamTextTools,
+            onFinish: async ({ response }) => {
+              // Disconnect the MCP client when finished
+              console.log('[DEBUG] Disconnecting MCP client in onFinish for user:', userId);
+              if (mcpConnection) { // Check if connection was established
+                 try {
+                    await disconnectMcpClient(userId);
+                    console.log('[DEBUG] MCP client disconnected successfully via disconnectMcpClient.');
+                } catch (disconnectError) {
+                    console.error('[ERROR] Error disconnecting MCP client via disconnectMcpClient:', disconnectError);
                 }
-
-                const [, assistantMessage] = appendResponseMessages({
-                  messages: [userMessage],
-                  responseMessages: response.messages,
-                });
-
-                await saveMessages({
-                  messages: [
-                    {
-                      id: assistantId,
-                      chatId: id,
-                      role: assistantMessage.role,
-                      parts: assistantMessage.parts,
-                      attachments:
-                        assistantMessage.experimental_attachments ?? [],
-                      createdAt: new Date(),
-                    },
-                  ],
-                });
-                console.log('Saved assistant message');
-              } catch (err) {
-                console.error('Failed to save chat', err);
+              } else {
+                console.log('[DEBUG] MCP connection was not established, skipping disconnect.');
               }
+
+              if (session.user?.id) {
+                try {
+                  const assistantId = getTrailingMessageId({
+                    messages: response.messages.filter(
+                      (message) => message.role === 'assistant',
+                    ),
+                  });
+
+                  if (!assistantId) {
+                    throw new Error('No assistant message found!');
+                  }
+
+                  const [, assistantMessage] = appendResponseMessages({
+                    messages: [userMessage],
+                    responseMessages: response.messages,
+                  });
+
+                  await saveMessages({
+                    messages: [
+                      {
+                        id: assistantId,
+                        chatId: id,
+                        role: assistantMessage.role,
+                        parts: assistantMessage.parts,
+                        attachments:
+                          assistantMessage.experimental_attachments ?? [],
+                        createdAt: new Date(),
+                      },
+                    ],
+                  });
+                  console.log('Saved assistant message');
+                } catch (err) {
+                  console.error('Failed to save chat', err);
+                }
+              }
+            },
+            experimental_telemetry: {
+              isEnabled: isProductionEnvironment,
+              functionId: 'stream-text',
+            },
+          });
+
+          result.consumeStream();
+
+          result.mergeIntoDataStream(dataStream, {
+            sendReasoning: true,
+          });
+        } catch (mcpError) {
+          console.error('[ERROR] Failed during MCP client setup, connection, or tool processing:', mcpError);
+          // When execute fails, the error should propagate to createDataStream's onError
+          // dataStream.error(mcpError instanceof Error ? mcpError.message : 'Failed during MCP setup');
+          // dataStream.close();
+          // Re-throw the error so the outer handler catches it
+          
+
+          // Disconnect the MCP client if it was initialized
+          if (mcpConnection) { // Check if connection was established
+            console.log('[DEBUG] Disconnecting MCP client due to error for user:', userId);
+            try {
+                 await disconnectMcpClient(userId);
+                 console.log('[DEBUG] MCP client disconnected after error via disconnectMcpClient.');
+            } catch (disconnectError) {
+                console.error('[ERROR] Error disconnecting MCP client after error via disconnectMcpClient:', disconnectError);
             }
-          },
-          experimental_telemetry: {
-            isEnabled: isProductionEnvironment,
-            functionId: 'stream-text',
-          },
-        });
-
-        result.consumeStream();
-
-        result.mergeIntoDataStream(dataStream, {
-          sendReasoning: true,
-        });
+          }
+          throw mcpError; 
+        }
       },
       onError: (error) => {
-        console.error('[DEBUG] Error in createDataStreamResponse:', error);
+        console.error('[DEBUG] Error in createDataStreamResponse (outer onError):', error);
         // Log the full error details including stack trace
         if (error instanceof Error) {
           console.error('[DEBUG] Error message:', error.message);
           console.error('[DEBUG] Error stack:', error.stack);
           
+          // Handle specific AI_MessageConversionError for tool invocations
+          if (error.message.includes('ToolInvocation must have a result')) {
+            console.error('[ERROR] Tool invocation without result detected. This should have been cleaned up.');
+            return 'There was an issue with a previous tool call. Please try starting a new conversation.';
+          }
+          
           // Provide better error messaging based on error type
-          if (error.message.includes('MCP') || error.message.includes('tool')) {
-            return 'There was an error connecting to Microsoft 365. Please make sure you are logged in and try again.';
-          } else if (error.message.includes('bedrock') || error.message.includes('model')) {
+          if (error.message.includes('bedrock') || error.message.includes('model')) {
             return 'There was an error with the AI service. Please try again later.';
           }
         } else {
@@ -587,16 +578,14 @@ Examples:
       },
     });
   } catch (error) {
-    console.error('[DEBUG] POST /api/chat error:', error);
+    console.error('[DEBUG] POST /api/chat error (outer catch):', error);
     // Log the full error details including stack trace
     if (error instanceof Error) {
       console.error('[DEBUG] Error message:', error.message);
       console.error('[DEBUG] Error stack:', error.stack);
       
       // Provide better error messaging based on error type
-      if (error.message.includes('MCP') || error.message.includes('tool')) {
-        return new Response('There was an error connecting to Microsoft 365. Please make sure you are logged in and try again.', { status: 500 });
-      } else if (error.message.includes('bedrock') || error.message.includes('model')) {
+      if (error.message.includes('bedrock') || error.message.includes('model')) {
         return new Response('There was an error with the AI service. Please try again later.', { status: 500 });
       }
     } else {
@@ -660,6 +649,9 @@ export async function GET(request: Request) {
 
   return new Response(emptyDataStream, {
     status: 200,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+    }
   });
 }
 

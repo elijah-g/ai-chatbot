@@ -1,3 +1,0 @@
-// Import from the client module which now uses the unified client
-import { getOrCreateMcpClient } from '../client';
-// ... existing code ... 

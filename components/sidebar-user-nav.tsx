@@ -5,7 +5,6 @@ import Image from 'next/image';
 import type { User } from 'next-auth';
 import { useSession } from 'next-auth/react';
 import { useTheme } from 'next-themes';
-import Link from 'next/link';
 
 import {
   DropdownMenu,

@@ -13,7 +13,7 @@ import { memo } from 'react';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { type VisibilityType, VisibilitySelector } from './visibility-selector';
 import type { Session } from 'next-auth';
-import { M365LoginButton } from './m365-login-button';
+import { UserMenu } from './user-menu';
 
 function PureChatHeader({
   chatId,
@@ -72,9 +72,8 @@ function PureChatHeader({
         />
       )}
 
-      {/* M365 Login Button */}
-      <div className="order-3 md:order-4">
-        <M365LoginButton />
+      <div className="ml-auto flex items-center space-x-2">
+        <UserMenu user={session.user} />
       </div>
 
       <Button

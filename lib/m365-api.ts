@@ -1,4 +1,4 @@
-import { Session } from 'next-auth';
+import type { Session } from 'next-auth';
 
 /**
  * Creates an authenticated fetch function for MS365 API requests.
@@ -16,7 +16,7 @@ export function createM365Api(session: Session | null, baseUrl = '/api/m365') {
 
     // Add auth token if available
     if (session?.user?.accessToken) {
-      headers['Authorization'] = `Bearer ${session.user.accessToken}`;
+      headers.Authorization = `Bearer ${session.user.accessToken}`;
     }
 
     return headers;

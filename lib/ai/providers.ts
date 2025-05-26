@@ -1,7 +1,5 @@
 import {
   customProvider,
-  extractReasoningMiddleware,
-  wrapLanguageModel,
 } from 'ai';
 import { bedrock } from '@ai-sdk/amazon-bedrock';
 import { isTestEnvironment } from '../constants';

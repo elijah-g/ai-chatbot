@@ -1,38 +1,14 @@
 import 'server-only';
-
-import {
-  and,
-  asc,
-  count,
-  desc,
-  eq,
-  gt,
-  gte,
-  inArray,
-  lt,
-  type SQL,
-} from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/postgres-js';
-import postgres from 'postgres';
 import { createClient } from '@supabase/supabase-js';
 
-import {
-  user,
-  chat,
-  type User,
-  document,
-  type Suggestion,
-  suggestion,
-  message,
-  vote,
-  type DBMessage,
-  type Chat,
-  stream,
+import type {
+  User,
+  Suggestion,
+  DBMessage,
 } from './schema';
 import type { ArtifactKind } from '@/components/artifact';
 import { generateUUID } from '../utils';
 import { generateHashedPassword } from './utils';
-import type { VisibilityType } from '@/components/visibility-selector';
 
 // Optionally, if not using email/pass login, you can
 // use the Drizzle adapter for Auth.js / NextAuth
@@ -124,7 +100,7 @@ export async function getChatsByUserId({ id, limit, startingAfter, endingBefore 
   }
   const hasMore = (data?.length || 0) > limit;
   return {
-    chats: hasMore ? data!.slice(0, limit) : data || [],
+    chats: hasMore ? data?.slice(0, limit) : data || [],
     hasMore,
   };
 }

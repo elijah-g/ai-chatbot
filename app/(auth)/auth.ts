@@ -1,7 +1,7 @@
 import { compare } from 'bcrypt-ts';
 import NextAuth, { type DefaultSession } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
-import AzureADProvider from "next-auth/providers/azure-ad";
+import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
 import { getUser, findOrCreateAzureADUser } from '@/lib/db/queries';
 import { authConfig } from './auth.config';
 import { DUMMY_PASSWORD } from '@/lib/constants';
@@ -21,6 +21,7 @@ declare module 'next-auth' {
       id: string;
       type: UserType;
       accessToken?: string;
+      accessTokenExpires?: number;
     } & DefaultSession['user'];
   }
 
@@ -39,6 +40,55 @@ declare module 'next-auth/jwt' {
     accessToken?: string;
     refreshToken?: string;
     accessTokenExpires?: number;
+    scope?: string;
+  }
+}
+
+/**
+ * Refreshes an expired access token using the refresh token
+ */
+async function refreshAccessToken(token: any) {
+  try {
+    console.log("Attempting to refresh access token...");
+    const url = `https://login.microsoftonline.com/${process.env.AZURE_AD_TENANT_ID}/oauth2/v2.0/token`;
+    
+    const response = await fetch(url, {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: process.env.AZURE_AD_CLIENT_ID!,
+        client_secret: process.env.AZURE_AD_CLIENT_SECRET!,
+        scope: 'openid profile email offline_access Calendars.ReadWrite Contacts.ReadWrite Mail.ReadWrite User.Read',
+        grant_type: "refresh_token",
+        refresh_token: token.refreshToken,
+      }),
+      method: "POST",
+    });
+
+    const tokens = await response.json();
+
+    if (!response.ok) {
+      console.error("Token refresh failed:", tokens);
+      throw tokens;
+    }
+
+    console.log("Access token refreshed successfully");
+    console.log(`Refreshed token scope: ${tokens.scope}`);
+    
+    return {
+      ...token,
+      accessToken: tokens.access_token,
+      accessTokenExpires: Date.now() + tokens.expires_in * 1000,
+      refreshToken: tokens.refresh_token ?? token.refreshToken, // Fall back to old refresh token
+      scope: tokens.scope, // Store the refreshed scope
+    };
+  } catch (error) {
+    console.error("Error refreshing access token:", error);
+    return {
+      ...token,
+      error: "RefreshAccessTokenError",
+    };
   }
 }
 
@@ -50,12 +100,14 @@ export const {
 } = NextAuth({
   ...authConfig,
   providers: [
-    AzureADProvider({
+    MicrosoftEntraID({
       clientId: process.env.AZURE_AD_CLIENT_ID!,
       clientSecret: process.env.AZURE_AD_CLIENT_SECRET!,
       authorization: {
         params: {
-          scope: 'openid profile email User.Read offline_access',
+          scope: 'openid profile email offline_access Calendars.ReadWrite Contacts.ReadWrite Mail.ReadWrite User.Read',
+          prompt: 'consent',
+          access_type: 'offline',
         },
         url: `https://login.microsoftonline.com/${process.env.AZURE_AD_TENANT_ID}/oauth2/v2.0/authorize`,
       },
@@ -113,6 +165,9 @@ export const {
             }
           }
           
+          console.log(`Initial Azure AD token received with scope: ${account.scope}`);
+          console.log(`Token expires at: ${new Date(account.expires_at ? account.expires_at * 1000 : 0)}`);
+          
           return {
             ...token,
             id: userId as string,
@@ -120,6 +175,7 @@ export const {
             accessToken: account.access_token,
             refreshToken: account.refresh_token,
             accessTokenExpires: account.expires_at ? account.expires_at * 1000 : 0, // Convert to ms
+            scope: account.scope, // Store the scope for debugging
           };
         }
         
@@ -136,16 +192,23 @@ export const {
         return token;
       }
 
-      // Token has expired, try to refresh it (future enhancement)
-      // For now, just return the existing token
+      // Access token has expired, try to refresh it
+      if (token.refreshToken) {
+        console.log("Access token expired, attempting refresh...");
+        return refreshAccessToken(token);
+      }
+
+      // No refresh token available, return existing token (user will need to re-authenticate)
+      console.warn("No refresh token available, user will need to re-authenticate");
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
         session.user.id = token.id;
         session.user.type = token.type;
-        // Include the access token in the session for API calls
+        // Include the access token and expiry in the session for API calls
         session.user.accessToken = token.accessToken;
+        session.user.accessTokenExpires = token.accessTokenExpires;
       }
 
       return session;

@@ -18,6 +18,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { MessageEditor } from './message-editor';
 import { DocumentPreview } from './document-preview';
 import { MessageReasoning } from './message-reasoning';
+import { ToolResult } from './tool-result';
+import { ToolCall } from './tool-call';
 import type { UseChatHelpers } from '@ai-sdk/react';
 
 const PurePreviewMessage = ({
@@ -183,7 +185,9 @@ const PurePreviewMessage = ({
                           args={args}
                           isReadonly={isReadonly}
                         />
-                      ) : null}
+                      ) : (
+                        <ToolCall toolName={toolName} args={args} />
+                      )}
                     </div>
                   );
                 }
@@ -213,7 +217,7 @@ const PurePreviewMessage = ({
                           isReadonly={isReadonly}
                         />
                       ) : (
-                        <pre>{JSON.stringify(result, null, 2)}</pre>
+                        <ToolResult toolName={toolName} result={result} />
                       )}
                     </div>
                   );

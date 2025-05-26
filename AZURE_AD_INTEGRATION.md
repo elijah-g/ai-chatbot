@@ -8,8 +8,9 @@ Azure AD authentication has been implemented using NextAuth.js to enable secure 
 
 1. Azure AD authentication with OpenID Connect
 2. Session management with access token persistence
-3. Protected routes requiring Azure AD authentication
-4. Integration with the existing M365 MCP client
+3. **Automatic token refresh** to handle token expiration
+4. Protected routes requiring Azure AD authentication
+5. Integration with the existing M365 MCP client
 
 ## Configuration
 
@@ -25,6 +26,10 @@ NEXTAUTH_SECRET=your-nextauth-secret-key
 # Azure AD Configuration
 AZURE_AD_CLIENT_ID=your-azure-ad-client-id
 AZURE_AD_CLIENT_SECRET=your-azure-ad-client-secret
+AZURE_AD_TENANT_ID=your-azure-ad-tenant-id
+
+# MCP Server Configuration
+NEXT_PUBLIC_MCP_SERVER_URL=http://localhost:8080
 ```
 
 ### Azure AD App Registration
@@ -34,25 +39,37 @@ AZURE_AD_CLIENT_SECRET=your-azure-ad-client-secret
 3. Create a client secret
 4. Configure API permissions:
    - Microsoft Graph: User.Read, openid, profile, email, offline_access
+   - **Recommended**: Grant admin consent for your organization
 
 ## Implementation Details
 
 ### Authentication Provider
 
-The Azure AD authentication provider is configured in `app/(auth)/auth.ts` with the following scopes:
+The Azure AD authentication provider is configured in `app/(auth)/auth.ts` with the following enhanced scopes:
 - openid
 - profile
 - email
 - User.Read
 - offline_access
+- https://graph.microsoft.com/.default (for comprehensive Graph API access)
 
 ### Token Management
 
-Access tokens from Azure AD are:
-1. Obtained during authentication
-2. Stored in the JWT session
-3. Made available via the session object
-4. Used for API requests to Microsoft 365 services
+**NEW: Automatic Token Refresh**
+
+Access tokens from Azure AD are now automatically refreshed:
+1. Obtained during authentication with refresh tokens
+2. Stored in the JWT session with expiration timestamps
+3. **Automatically refreshed** when they expire or are close to expiring
+4. Proactively checked before MCP tool calls
+5. Used for API requests to Microsoft 365 services
+
+#### Token Refresh Process
+
+1. **Proactive Refresh**: Tokens are refreshed 5 minutes before expiration
+2. **Automatic Refresh**: The JWT callback automatically handles expired tokens
+3. **Error Handling**: Failed refresh attempts redirect users to re-authenticate
+4. **Session Updates**: The `useSession().update()` function triggers token refresh
 
 ### Middleware
 
@@ -66,7 +83,8 @@ The middleware (`middleware.ts`) protects routes that require authentication:
 Several hooks have been implemented to facilitate Azure AD authentication:
 
 1. `useAzureAuth`: Extracts access tokens from the session
-2. `useM365WithAuth`: Combines Azure AD authentication with M365 client
+2. `useM365WithAuth`: Combines Azure AD authentication with M365 client and **automatic token refresh**
+3. `useM365Mcp`: **NEW** - Direct MCP client hook with connection management
 
 ### Components
 
@@ -81,6 +99,7 @@ The M365 API routes have been updated to:
 - Verify Azure AD authentication
 - Include access tokens with requests
 - Handle authentication errors
+- **NEW**: Support automatic token refresh
 
 ## Usage
 
@@ -89,44 +108,123 @@ The M365 API routes have been updated to:
 ```tsx
 import { AzureLoginButton } from '@/components/azure-login-button';
 
-export default function LoginPage() {
+function LoginPage() {
   return (
     <div>
-      <h1>Login</h1>
+      <h1>Sign in to access Microsoft 365</h1>
       <AzureLoginButton />
     </div>
   );
 }
 ```
 
-### Making Authenticated API Requests
+### Using M365 Features with Auto-Refresh
 
 ```tsx
 import { useM365WithAuth } from '@/hooks/use-m365-with-auth';
 
-export default function M365Component() {
-  const { invokeM365Tool, isAzureUser } = useM365WithAuth();
+function M365Component() {
+  const { invokeM365Tool, isAzureUser, isAuthenticated } = useM365WithAuth();
   
-  const handleFetchEmails = async () => {
-    const result = await invokeM365Tool('getMail', { count: 10 });
-    // Process result
+  const handleGetEmails = async () => {
+    // Token refresh is handled automatically
+    const result = await invokeM365Tool('get_emails', { limit: 10 });
+    console.log('Emails:', result);
   };
+  
+  if (!isAuthenticated) {
+    return <div>Please sign in</div>;
+  }
+  
+  if (!isAzureUser) {
+    return <div>Azure AD authentication required</div>;
+  }
+  
+  return (
+    <button onClick={handleGetEmails}>
+      Get Recent Emails
+    </button>
+  );
+}
+```
+
+### Manual Token Refresh
+
+```tsx
+import { useM365WithAuth } from '@/hooks/use-m365-with-auth';
+
+function TokenStatus() {
+  const { checkAndRefreshToken, session } = useM365WithAuth();
+  
+  const handleRefresh = async () => {
+    const success = await checkAndRefreshToken();
+    if (success) {
+      console.log('Token refreshed successfully');
+    } else {
+      console.log('Token refresh failed');
+    }
+  };
+  
+  const tokenExpiry = session?.user?.accessTokenExpires;
+  const isExpiringSoon = tokenExpiry && (Date.now() + 5 * 60 * 1000) > tokenExpiry;
   
   return (
     <div>
-      {isAzureUser ? (
-        <button onClick={handleFetchEmails}>Fetch Emails</button>
-      ) : (
-        <p>Please log in with Microsoft to access this feature</p>
-      )}
+      <p>Token Status: {isExpiringSoon ? 'Expiring Soon' : 'Valid'}</p>
+      <button onClick={handleRefresh}>Refresh Token</button>
     </div>
   );
 }
 ```
 
+## Token Lifecycle
+
+### Access Token Expiration
+
+- **Default Lifetime**: 1 hour (Microsoft Graph API standard)
+- **Maximum Lifetime**: 24 hours (configurable in Azure AD)
+- **Refresh Window**: Tokens are refreshed 5 minutes before expiration
+- **Refresh Token Lifetime**: 90 days (or until revoked)
+
+### Error Handling
+
+The implementation handles various token-related scenarios:
+
+1. **Token Expired**: Automatic refresh using refresh token
+2. **Refresh Token Expired**: Redirect to re-authentication
+3. **Network Errors**: Retry logic with fallback to re-authentication
+4. **Invalid Tokens**: Clear session and redirect to login
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Token Refresh Fails**
+   - Check Azure AD app registration permissions
+   - Verify `offline_access` scope is granted
+   - Ensure `AZURE_AD_TENANT_ID` is correctly set
+
+2. **MCP Authentication Errors**
+   - Verify MCP server supports Bearer token authentication
+   - Check network connectivity to MCP server
+   - Review browser console for detailed error messages
+
+3. **Session Persistence Issues**
+   - Verify `NEXTAUTH_SECRET` is set and consistent
+   - Check browser cookie settings
+   - Ensure HTTPS in production environments
+
+### Debug Logging
+
+Enable debug logging by checking browser console for:
+- `[MCP Hook]` - MCP client operations
+- `[MCP Debug]` - Detailed MCP protocol messages
+- NextAuth debug messages for authentication flow
+
 ## Security Considerations
 
-1. Access tokens are stored securely in the session
-2. Protected routes enforce authentication
-3. Token expiration is handled gracefully
-4. API requests validate authentication before processing 
+1. **Token Storage**: Access tokens are stored in encrypted JWT sessions
+2. **Refresh Tokens**: Securely stored and rotated on each refresh
+3. **HTTPS**: Required for production deployments
+4. **Token Scope**: Limited to necessary Microsoft Graph permissions
+5. **Session Timeout**: Configurable session and token lifetimes 
