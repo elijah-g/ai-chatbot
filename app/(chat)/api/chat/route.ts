@@ -19,6 +19,7 @@ import {
   getStreamIdsByChatId,
   saveChat,
   saveMessages,
+  getSystemPromptPreferences,
 } from '@/lib/db/queries';
 import { generateUUID, getTrailingMessageId, geolocation } from '@/lib/utils';
 import { generateTitleFromUserMessage } from '../../actions';
@@ -354,6 +355,17 @@ export async function POST(request: Request) {
       country,
     };
 
+    // Fetch user system prompt preferences
+    let userPreferences = null;
+    try {
+      if (session?.user?.id) {
+        userPreferences = await getSystemPromptPreferences({ userId: session.user.id });
+      }
+    } catch (error) {
+      console.error('Failed to fetch user system prompt preferences:', error);
+      // Continue without preferences if fetch fails
+    }
+
     await saveMessages({
       messages: [
         {
@@ -383,8 +395,8 @@ export async function POST(request: Request) {
     // Debug tool configuration for AI library
     const streamTextConfig = {
       model: myProvider.languageModel(selectedChatModel),
-      // Use the base system prompt directly
-      system: systemPrompt({ selectedChatModel, requestHints }), 
+      // Use the system prompt with user preferences
+      system: systemPrompt({ selectedChatModel, requestHints, userPreferences }), 
       messages: cleanedMessages,
       maxSteps: 10,
       experimental_transform: smoothStream({ chunking: 'word' }),

@@ -5,6 +5,7 @@ import type {
   User,
   Suggestion,
   DBMessage,
+  SystemPromptPreferences,
 } from './schema';
 import type { ArtifactKind } from '@/components/artifact';
 import { generateUUID } from '../utils';
@@ -372,4 +373,111 @@ export async function getStreamIdsByChatId({ id }: { id: string }) {
     // Return an empty array as a fallback to prevent app crashing
     return [];
   }
+}
+
+// System Prompt Preferences functions
+export async function getSystemPromptPreferences({ userId }: { userId: string }): Promise<SystemPromptPreferences | null> {
+  const { data, error } = await supabase
+    .from('SystemPromptPreferences')
+    .select('*')
+    .eq('userId', userId)
+    .single();
+  
+  if (error) {
+    if (error.code === 'PGRST116') {
+      // No rows found - return null to indicate no preferences set
+      return null;
+    }
+    console.error('Failed to get system prompt preferences from database', error);
+    throw error;
+  }
+  
+  return data;
+}
+
+export async function createSystemPromptPreferences({ 
+  userId, 
+  preferences 
+}: { 
+  userId: string; 
+  preferences: Partial<Omit<SystemPromptPreferences, 'id' | 'userId' | 'createdAt' | 'updatedAt'>>; 
+}): Promise<SystemPromptPreferences> {
+  const now = new Date();
+  const { data, error } = await supabase
+    .from('SystemPromptPreferences')
+    .insert([{
+      userId,
+      ...preferences,
+      createdAt: now,
+      updatedAt: now,
+    }])
+    .select('*')
+    .single();
+  
+  if (error) {
+    console.error('Failed to create system prompt preferences in database', error);
+    throw error;
+  }
+  
+  return data;
+}
+
+export async function updateSystemPromptPreferences({ 
+  userId, 
+  preferences 
+}: { 
+  userId: string; 
+  preferences: Partial<Omit<SystemPromptPreferences, 'id' | 'userId' | 'createdAt' | 'updatedAt'>>; 
+}): Promise<SystemPromptPreferences> {
+  const { data, error } = await supabase
+    .from('SystemPromptPreferences')
+    .update({
+      ...preferences,
+      updatedAt: new Date(),
+    })
+    .eq('userId', userId)
+    .select('*')
+    .single();
+  
+  if (error) {
+    console.error('Failed to update system prompt preferences in database', error);
+    throw error;
+  }
+  
+  return data;
+}
+
+export async function getOrCreateSystemPromptPreferences({ userId }: { userId: string }): Promise<SystemPromptPreferences> {
+  const existing = await getSystemPromptPreferences({ userId });
+  
+  if (existing) {
+    return existing;
+  }
+  
+  // Create with default values
+  return await createSystemPromptPreferences({ 
+    userId, 
+    preferences: {
+      isOutlookAssistant: false,
+      includeCancelledEvents: false,
+      includeTentativeEvents: true,
+      includePrivateEvents: false,
+      showEventDetails: true,
+      requireDraftConfirmation: true,
+      autoSuggestMeetingTimes: true,
+      includeEmailSignature: true,
+      prioritizeInternalEmails: false,
+      requireMeetingConfirmation: true,
+      suggestMeetingRooms: true,
+      addDefaultMeetingDuration: true,
+      includeTeamsLink: true,
+      createFollowUpTasks: false,
+      suggestPriorities: true,
+      trackDeadlines: true,
+      formalTone: false,
+      includeGreetings: true,
+      useActiveVoice: true,
+      defaultMeetingDuration: '30',
+    }
+  });
 }

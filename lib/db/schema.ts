@@ -171,3 +171,59 @@ export const stream = pgTable(
 );
 
 export type Stream = InferSelectModel<typeof stream>;
+
+export const systemPromptPreferences = pgTable('SystemPromptPreferences', {
+  id: uuid('id').primaryKey().notNull().defaultRandom(),
+  userId: uuid('userId')
+    .notNull()
+    .references(() => user.id)
+    .unique(),
+  
+  // Outlook/Organization Assistant Configuration
+  isOutlookAssistant: boolean('isOutlookAssistant').notNull().default(false),
+  
+  // Calendar behavior preferences
+  includeCancelledEvents: boolean('includeCancelledEvents').notNull().default(false),
+  includeTentativeEvents: boolean('includeTentativeEvents').notNull().default(true),
+  includePrivateEvents: boolean('includePrivateEvents').notNull().default(false),
+  showEventDetails: boolean('showEventDetails').notNull().default(true),
+  
+  // Email behavior preferences
+  requireDraftConfirmation: boolean('requireDraftConfirmation').notNull().default(true),
+  autoSuggestMeetingTimes: boolean('autoSuggestMeetingTimes').notNull().default(true),
+  includeEmailSignature: boolean('includeEmailSignature').notNull().default(true),
+  prioritizeInternalEmails: boolean('prioritizeInternalEmails').notNull().default(false),
+  
+  // Meeting behavior preferences
+  requireMeetingConfirmation: boolean('requireMeetingConfirmation').notNull().default(true),
+  suggestMeetingRooms: boolean('suggestMeetingRooms').notNull().default(true),
+  addDefaultMeetingDuration: boolean('addDefaultMeetingDuration').notNull().default(true),
+  includeTeamsLink: boolean('includeTeamsLink').notNull().default(true),
+  
+  // Task and productivity preferences
+  createFollowUpTasks: boolean('createFollowUpTasks').notNull().default(false),
+  suggestPriorities: boolean('suggestPriorities').notNull().default(true),
+  trackDeadlines: boolean('trackDeadlines').notNull().default(true),
+  
+  // Communication style preferences
+  formalTone: boolean('formalTone').notNull().default(false),
+  includeGreetings: boolean('includeGreetings').notNull().default(true),
+  useActiveVoice: boolean('useActiveVoice').notNull().default(true),
+  useBritishEnglish: boolean('useBritishEnglish').notNull().default(true),
+  useEmoji: boolean('useEmoji').notNull().default(false),
+  verbosityLevel: varchar('verbosityLevel', { enum: ['concise', 'balanced', 'detailed'] }).notNull().default('balanced'),
+  useHumor: boolean('useHumor').notNull().default(false),
+  useAcademicStyle: boolean('useAcademicStyle').notNull().default(false),
+  
+  // Custom text fields
+  customInstructions: text('customInstructions'),
+  emailSignature: text('emailSignature'),
+  organizationContext: text('organizationContext'),
+  defaultMeetingDuration: varchar('defaultMeetingDuration', { length: 10 }).default('30'),
+  
+  // Timestamps
+  createdAt: timestamp('createdAt').notNull().defaultNow(),
+  updatedAt: timestamp('updatedAt').notNull().defaultNow(),
+});
+
+export type SystemPromptPreferences = InferSelectModel<typeof systemPromptPreferences>;
