@@ -15,6 +15,7 @@ interface MessagesProps {
   messages: Array<UIMessage>;
   setMessages: UseChatHelpers['setMessages'];
   reload: UseChatHelpers['reload'];
+  addToolResult: ({ toolCallId, result }: { toolCallId: string; result: any }) => void;
   isReadonly: boolean;
   isArtifactVisible: boolean;
 }
@@ -26,6 +27,7 @@ function PureMessages({
   messages,
   setMessages,
   reload,
+  addToolResult,
   isReadonly,
 }: MessagesProps) {
   const {
@@ -59,6 +61,7 @@ function PureMessages({
           }
           setMessages={setMessages}
           reload={reload}
+          addToolResult={addToolResult}
           isReadonly={isReadonly}
           requiresScrollPadding={
             hasSentMessage && index === messages.length - 1

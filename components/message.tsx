@@ -16,10 +16,12 @@ import { cn } from '@/lib/utils';
 import { Button } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { MessageEditor } from './message-editor';
+import { ToolCall } from './tool-call';
+import { ToolResult } from './tool-result';
 import { DocumentPreview } from './document-preview';
 import { MessageReasoning } from './message-reasoning';
-import { ToolResult } from './tool-result';
-import { ToolCall } from './tool-call';
+import { DestructiveToolApproval } from './destructive-tool-approval';
+import { useToolsMetadata } from '@/hooks/use-tools-metadata';
 import type { UseChatHelpers } from '@ai-sdk/react';
 
 const PurePreviewMessage = ({
@@ -29,6 +31,7 @@ const PurePreviewMessage = ({
   isLoading,
   setMessages,
   reload,
+  addToolResult,
   isReadonly,
   requiresScrollPadding,
 }: {
@@ -38,10 +41,21 @@ const PurePreviewMessage = ({
   isLoading: boolean;
   setMessages: UseChatHelpers['setMessages'];
   reload: UseChatHelpers['reload'];
+  addToolResult: ({ toolCallId, result }: { toolCallId: string; result: any }) => void;
   isReadonly: boolean;
   requiresScrollPadding: boolean;
 }) => {
   const [mode, setMode] = useState<'view' | 'edit'>('view');
+  const { isDestructiveTool } = useToolsMetadata();
+
+  const handleApproval = async (toolCallId: string, result: string) => {
+    // Use addToolResult to properly handle the approval workflow
+    // This will trigger the backend to process the approval and continue the conversation
+    addToolResult({
+      toolCallId,
+      result,
+    });
+  };
 
   return (
     <AnimatePresence>
@@ -161,6 +175,21 @@ const PurePreviewMessage = ({
 
                 if (state === 'call') {
                   const { args } = toolInvocation;
+
+                  // Check if this is a destructive tool that needs approval
+                  if (isDestructiveTool(toolName)) {
+                    return (
+                      <div key={toolCallId}>
+                        <DestructiveToolApproval
+                          toolName={toolName}
+                          args={args}
+                          toolCallId={toolCallId}
+                          onApprove={handleApproval}
+                          isReadonly={isReadonly}
+                        />
+                      </div>
+                    );
+                  }
 
                   return (
                     <div

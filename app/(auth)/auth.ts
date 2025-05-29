@@ -7,6 +7,7 @@ import { authConfig } from './auth.config';
 import { DUMMY_PASSWORD } from '@/lib/constants';
 import type { DefaultJWT } from 'next-auth/jwt';
 import { createClient } from '@supabase/supabase-js';
+import { logger } from '@/lib/utils/logger';
 
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL!;
@@ -49,7 +50,7 @@ declare module 'next-auth/jwt' {
  */
 async function refreshAccessToken(token: any) {
   try {
-    console.log("Attempting to refresh access token...");
+    logger.info("Attempting to refresh access token...");
     const url = `https://login.microsoftonline.com/${process.env.AZURE_AD_TENANT_ID}/oauth2/v2.0/token`;
     
     const response = await fetch(url, {
@@ -59,7 +60,7 @@ async function refreshAccessToken(token: any) {
       body: new URLSearchParams({
         client_id: process.env.AZURE_AD_CLIENT_ID!,
         client_secret: process.env.AZURE_AD_CLIENT_SECRET!,
-        scope: 'openid profile email offline_access Calendars.ReadWrite Contacts.ReadWrite Mail.ReadWrite User.Read',
+        scope: 'openid profile email offline_access Calendars.ReadWrite ChannelMessage.ReadWrite Chat.ReadWrite Contacts.ReadWrite Files.ReadWrite.All Group.Read.All Mail.ReadWrite People.Read Sites.Read.All Tasks.ReadWrite Team.ReadBasic.All User.Read',
         grant_type: "refresh_token",
         refresh_token: token.refreshToken,
       }),
@@ -69,12 +70,12 @@ async function refreshAccessToken(token: any) {
     const tokens = await response.json();
 
     if (!response.ok) {
-      console.error("Token refresh failed:", tokens);
+      logger.error("Token refresh failed:", tokens);
       throw tokens;
     }
 
-    console.log("Access token refreshed successfully");
-    console.log(`Refreshed token scope: ${tokens.scope}`);
+    logger.info("Access token refreshed successfully");
+    logger.info(`Refreshed token scope: ${tokens.scope}`);
     
     return {
       ...token,
@@ -84,7 +85,7 @@ async function refreshAccessToken(token: any) {
       scope: tokens.scope, // Store the refreshed scope
     };
   } catch (error) {
-    console.error("Error refreshing access token:", error);
+    logger.error("Error refreshing access token:", error);
     return {
       ...token,
       error: "RefreshAccessTokenError",
@@ -105,7 +106,7 @@ export const {
       clientSecret: process.env.AZURE_AD_CLIENT_SECRET!,
       authorization: {
         params: {
-          scope: 'openid profile email offline_access Calendars.ReadWrite Contacts.ReadWrite Mail.ReadWrite User.Read',
+          scope: 'openid profile email offline_access Calendars.ReadWrite ChannelMessage.ReadWrite Chat.ReadWrite Contacts.ReadWrite Files.ReadWrite.All Group.Read.All Mail.ReadWrite People.Read Sites.Read.All Tasks.ReadWrite Team.ReadBasic.All User.Read',
           prompt: 'consent',
           access_type: 'offline',
         },
@@ -158,15 +159,15 @@ export const {
               // Find or create user in the database
               const dbUser = await findOrCreateAzureADUser(user.email);
               userId = dbUser.id;
-              console.log(`Azure AD user with email ${user.email} has database ID: ${userId}`);
+              logger.info(`Azure AD user with email ${user.email} has database ID: ${userId}`);
             } catch (error) {
-              console.error('Error ensuring user exists in database:', error);
+              logger.error('Error ensuring user exists in database:', error);
               // Continue with the existing ID as fallback
             }
           }
           
-          console.log(`Initial Azure AD token received with scope: ${account.scope}`);
-          console.log(`Token expires at: ${new Date(account.expires_at ? account.expires_at * 1000 : 0)}`);
+          logger.info(`Initial Azure AD token received with scope: ${account.scope}`);
+          logger.info(`Token expires at: ${new Date(account.expires_at ? account.expires_at * 1000 : 0)}`);
           
           return {
             ...token,
@@ -194,12 +195,12 @@ export const {
 
       // Access token has expired, try to refresh it
       if (token.refreshToken) {
-        console.log("Access token expired, attempting refresh...");
+        logger.info("Access token expired, attempting refresh...");
         return refreshAccessToken(token);
       }
 
       // No refresh token available, return existing token (user will need to re-authenticate)
-      console.warn("No refresh token available, user will need to re-authenticate");
+      logger.warn("No refresh token available, user will need to re-authenticate");
       return token;
     },
     async session({ session, token }) {

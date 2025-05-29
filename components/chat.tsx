@@ -53,6 +53,7 @@ export function Chat({
     status,
     stop,
     reload,
+    addToolResult,
     experimental_resume,
   } = useChat({
     id,
@@ -129,6 +130,7 @@ export function Chat({
           messages={messages}
           setMessages={setMessages}
           reload={reload}
+          addToolResult={addToolResult}
           isReadonly={isReadonly}
           isArtifactVisible={isArtifactVisible}
         />
@@ -166,6 +168,7 @@ export function Chat({
         messages={messages}
         setMessages={setMessages}
         reload={reload}
+        addToolResult={addToolResult}
         votes={votes}
         isReadonly={isReadonly}
         selectedVisibilityType={visibilityType}

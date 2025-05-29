@@ -1,18 +1,31 @@
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config({ path: '.env.local' });
 
+// Add timestamp utility function
+const formatTimestamp = () => {
+  return new Date().toISOString();
+};
+
+const timestampedLog = (...args) => {
+  console.log(`[${formatTimestamp()}]`, ...args);
+};
+
+const timestampedError = (...args) => {
+  console.error(`[${formatTimestamp()}]`, ...args);
+};
+
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-  console.error('Missing SUPABASE_URL or SUPABASE_ANON_KEY environment variables');
+  timestampedError('Missing SUPABASE_URL or SUPABASE_ANON_KEY environment variables');
   process.exit(1);
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const createSystemPromptPreferencesTable = async () => {
-  console.log('Creating SystemPromptPreferences table...');
+  timestampedLog('Creating SystemPromptPreferences table...');
   
   try {
     // First, let's check if the table already exists
@@ -22,13 +35,13 @@ const createSystemPromptPreferencesTable = async () => {
       .limit(1);
     
     if (!checkError) {
-      console.log('✅ SystemPromptPreferences table already exists');
+      timestampedLog('✅ SystemPromptPreferences table already exists');
       return true;
     }
     
     // If table doesn't exist, we need to create it using a different approach
-    console.log('Table does not exist. Please create it manually in Supabase dashboard with the following SQL:');
-    console.log(`
+    timestampedLog('Table does not exist. Please create it manually in Supabase dashboard with the following SQL:');
+    timestampedLog(`
 CREATE TABLE "SystemPromptPreferences" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
   "userId" uuid NOT NULL REFERENCES "User"("id"),
@@ -97,13 +110,13 @@ CREATE TRIGGER update_system_prompt_preferences_updated_at
     
     return false;
   } catch (err) {
-    console.error('Failed to check table existence:', err);
+    timestampedError('Failed to check table existence:', err);
     return false;
   }
 };
 
 const testConnection = async () => {
-  console.log('Testing Supabase connection...');
+  timestampedLog('Testing Supabase connection...');
   
   try {
     // Test connection by checking if User table exists
@@ -113,40 +126,40 @@ const testConnection = async () => {
       .limit(1);
     
     if (error) {
-      console.error('Connection test failed:', error);
+      timestampedError('Connection test failed:', error);
       return false;
     }
     
-    console.log('✅ Supabase connection successful');
+    timestampedLog('✅ Supabase connection successful');
     return true;
   } catch (err) {
-    console.error('Failed to connect to Supabase:', err);
+    timestampedError('Failed to connect to Supabase:', err);
     return false;
   }
 };
 
 const main = async () => {
-  console.log('🚀 Starting SystemPromptPreferences table setup...\n');
+  timestampedLog('🚀 Starting SystemPromptPreferences table setup...\n');
   
   const connectionOk = await testConnection();
   if (!connectionOk) {
-    console.error('❌ Failed to connect to Supabase. Check your environment variables.');
+    timestampedError('❌ Failed to connect to Supabase. Check your environment variables.');
     process.exit(1);
   }
   
   const tableExists = await createSystemPromptPreferencesTable();
   if (tableExists) {
-    console.log('\n🎉 SystemPromptPreferences table is ready for use!');
-    console.log('You can now use the system prompt settings in your application.');
+    timestampedLog('\n🎉 SystemPromptPreferences table is ready for use!');
+    timestampedLog('You can now use the system prompt settings in your application.');
   } else {
-    console.log('\n📋 Please create the table manually in Supabase dashboard using the SQL above.');
-    console.log('After creating the table, the system prompt settings will be ready to use.');
+    timestampedLog('\n📋 Please create the table manually in Supabase dashboard using the SQL above.');
+    timestampedLog('After creating the table, the system prompt settings will be ready to use.');
   }
   
   process.exit(0);
 };
 
 main().catch((error) => {
-  console.error('❌ Migration failed:', error);
+  timestampedError('❌ Migration failed:', error);
   process.exit(1);
 }); 

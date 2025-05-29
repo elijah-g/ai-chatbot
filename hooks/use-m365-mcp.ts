@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { getOrCreateMcpClient } from '@/lib/ai/mcp/client';
+import { logger } from '@/lib/utils/logger';
 
 interface McpClient {
   invokeTool: (toolName: string, params: Record<string, any>) => Promise<any>;
@@ -37,20 +38,21 @@ export function useM365Mcp(): McpClient {
     setError(null);
 
     try {
-      console.log('[MCP Hook] Initializing MCP client...');
+      logger.log('[MCP Hook] Initializing MCP client...');
       const connection = await getOrCreateMcpClient(
         mcpUrl,
         session.user.id,
         undefined, // sessionId
-        session.user.accessToken
+        session.user.accessToken,
+        { timeout: 60000 } // 60 second timeout
       );
 
       setClient(connection);
       setIsConnected(true);
-      console.log('[MCP Hook] MCP client initialized successfully');
+      logger.log('[MCP Hook] MCP client initialized successfully');
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      console.error('[MCP Hook] Failed to initialize MCP client:', errorMessage);
+      logger.error('[MCP Hook] Failed to initialize MCP client:', errorMessage);
       setError(errorMessage);
       setIsConnected(false);
       setClient(null);
@@ -65,17 +67,17 @@ export function useM365Mcp(): McpClient {
     }
 
     try {
-      console.log(`[MCP Hook] Invoking tool: ${toolName}`, params);
+      logger.log(`[MCP Hook] Invoking tool: ${toolName}`, params);
       const result = await client.client.callTool({
         name: toolName,
         arguments: params
       });
 
-      console.log(`[MCP Hook] Tool ${toolName} completed successfully`);
+      logger.log(`[MCP Hook] Tool ${toolName} completed successfully`);
       return result;
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      console.error(`[MCP Hook] Error invoking tool ${toolName}:`, errorMessage);
+      logger.error(`[MCP Hook] Error invoking tool ${toolName}:`, errorMessage);
       
       // If it's an authentication error, reset the connection
       if (errorMessage.includes('401') || errorMessage.includes('Unauthorized')) {

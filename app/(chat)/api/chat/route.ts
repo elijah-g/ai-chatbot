@@ -5,7 +5,7 @@ import {
   smoothStream,
   streamText,
 } from 'ai';
-import { getOrCreateMcpClient, disconnectMcpClient } from '@/lib/ai/mcp/client';
+import { getOrCreateMcpClient, disconnectMcpClient, type McpTool, getProcessedTools, type ProcessedTool } from '@/lib/ai/mcp/client';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { z } from 'zod';
 import { auth, type UserType } from '@/app/(auth)/auth';
@@ -20,12 +20,15 @@ import {
   saveChat,
   saveMessages,
   getSystemPromptPreferences,
+  messageExists,
 } from '@/lib/db/queries';
 import { generateUUID, getTrailingMessageId, geolocation } from '@/lib/utils';
 import { generateTitleFromUserMessage } from '../../actions';
 import { isProductionEnvironment } from '@/lib/constants';
 import { myProvider } from '@/lib/ai/providers';
 import { entitlementsByUserType } from '@/lib/ai/entitlements';
+import { processToolCalls, APPROVAL } from './utils';
+import { logger } from '@/lib/utils/logger';
 
 // For type definitions
 interface UIMessage {
@@ -110,14 +113,14 @@ function hasProblematicToolInvocations(messages: any[]): boolean {
       // Check for incomplete tool calls
       for (const [toolCallId, { hasCall, hasResult }] of toolCalls) {
         if (hasCall && !hasResult) {
-          console.log(`[DEBUG] Found problematic tool call: ${toolCallId}`);
+          logger.log(`[DEBUG] Found problematic tool call: ${toolCallId}`);
           return true;
         }
       }
     }
     return false;
   } catch (error) {
-    console.error('[ERROR] Error checking for problematic tool invocations:', error);
+    logger.error('[ERROR] Error checking for problematic tool invocations:', error);
     return false;
   }
 }
@@ -152,7 +155,7 @@ function cleanupIncompleteToolInvocations(messages: any[]): any[] {
             part.toolInvocation?.toolCallId) {
           const hasResult = toolCallsWithResults.has(part.toolInvocation.toolCallId);
           if (!hasResult) {
-            console.log(`[DEBUG] Removing incomplete tool call: ${part.toolInvocation.toolName || 'unknown'} (${part.toolInvocation.toolCallId})`);
+            logger.log(`[DEBUG] Removing incomplete tool call: ${part.toolInvocation.toolName || 'unknown'} (${part.toolInvocation.toolCallId})`);
             return false;
           }
         }
@@ -165,60 +168,10 @@ function cleanupIncompleteToolInvocations(messages: any[]): any[] {
       };
     });
   } catch (error) {
-    console.error('[ERROR] Failed to cleanup incomplete tool invocations:', error);
+    logger.error('[ERROR] Failed to cleanup incomplete tool invocations:', error);
     // Return original messages if cleanup fails
     return messages;
   }
-}
-
-/**
- * Convert MCP tool input schema to Zod schema
- */
-function convertMcpSchemaToZod(inputSchema: any): z.ZodType<any> {
-  console.log(`[DEBUG] Converting MCP schema to Zod:`, JSON.stringify(inputSchema, null, 2));
-  
-  if (!inputSchema || typeof inputSchema !== 'object') {
-    console.log(`[DEBUG] No input schema or invalid type, using passthrough`);
-    return z.object({}).passthrough();
-  }
-
-  if (inputSchema.type === 'object' && inputSchema.properties) {
-    const zodObject: Record<string, z.ZodType<any>> = {};
-    
-    for (const [key, prop] of Object.entries(inputSchema.properties)) {
-      const property = prop as any;
-      
-      switch (property.type) {
-        case 'string':
-          zodObject[key] = z.string();
-          break;
-        case 'number':
-          zodObject[key] = z.number();
-          break;
-        case 'boolean':
-          zodObject[key] = z.boolean();
-          break;
-        case 'array':
-          zodObject[key] = z.array(z.any());
-          break;
-        default:
-          zodObject[key] = z.any();
-      }
-      
-      // Handle optional vs required fields
-      if (!inputSchema.required || !inputSchema.required.includes(key)) {
-        zodObject[key] = zodObject[key].optional();
-      }
-    }
-    
-    console.log(`[DEBUG] Created Zod schema with properties:`, Object.keys(zodObject));
-    console.log(`[DEBUG] Required fields:`, inputSchema.required || []);
-    return z.object(zodObject);
-  }
-  
-  // Fallback to passthrough for unknown schemas
-  console.log(`[DEBUG] Unknown schema structure, using passthrough`);
-  return z.object({}).passthrough();
 }
 
 export async function POST(request: Request) {
@@ -226,7 +179,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     
     // Log the raw structure of the body for debugging
-    console.log('[DEBUG] Request body structure:', {
+    logger.log('[DEBUG] Request body structure:', {
       hasId: !!body.id,
       hasMessages: !!body.messages,
       messagesIsArray: Array.isArray(body.messages),
@@ -237,7 +190,7 @@ export async function POST(request: Request) {
     
     // Validate required fields
     if (!body || typeof body !== 'object') {
-      console.error('Invalid request body:', body);
+      logger.error('Invalid request body:', body);
       return new Response('Invalid request body', { status: 400 });
     }
     
@@ -264,7 +217,7 @@ export async function POST(request: Request) {
     
     // Ensure required fields exist
     if (!id || messages.length === 0 || !selectedChatModel) {
-      console.error('Missing required fields in request:', { 
+      logger.error('Missing required fields in request:', { 
         id, 
         messagesLength: messages.length,
         hasValidMessage: messages.length > 0 ? messages[0].role !== undefined : false,
@@ -273,13 +226,13 @@ export async function POST(request: Request) {
       return new Response('Missing required fields', { status: 400 });
     }
 
-    console.log('POST /api/chat received', { id, messages, selectedChatModel });
+    logger.log('POST /api/chat received', { id, messages, selectedChatModel });
 
     const session = await auth();
-    console.log('Session:', session);
+    logger.log('Session:', session);
 
     if (!session?.user?.id) {
-      console.error('No session user id');
+      logger.error('No session user id');
       return new Response('Unauthorized', { status: 401 });
     }
 
@@ -289,10 +242,10 @@ export async function POST(request: Request) {
       id: session.user.id,
       differenceInHours: 24,
     });
-    console.log('Message count in last 24h:', messageCount);
+    logger.log('Message count in last 24h:', messageCount);
 
     if (messageCount > entitlementsByUserType[userType].maxMessagesPerDay) {
-      console.error('User exceeded max messages per day');
+      logger.error('User exceeded max messages per day');
       return new Response(
         'You have exceeded your maximum number of messages for the day! Please try again later.',
         {
@@ -302,49 +255,81 @@ export async function POST(request: Request) {
     }
 
     const userMessage = getMostRecentUserMessage(messages);
-    console.log('Most recent user message:', userMessage);
+    logger.log('Most recent user message:', userMessage);
 
-    if (!userMessage) {
-      console.error('No user message found in messages array of length:', messages?.length);
+    // Check if this is an approval workflow (tool result processing)
+    const isApprovalWorkflow = messages.some(msg => 
+      msg.parts?.some((part: any) => 
+        part.type === 'tool-invocation' && 
+        part.toolInvocation?.state === 'result' &&
+        (part.toolInvocation?.result === 'Yes, confirmed.' || part.toolInvocation?.result === 'No, denied.')
+      )
+    );
+
+    if (!userMessage && !isApprovalWorkflow) {
+      logger.error('No user message found in messages array of length:', messages?.length);
       return new Response('No user message found', { status: 400 });
     }
 
     const chat = await getChatById({ id });
-    console.log('Chat from DB:', chat);
+    logger.log('Chat from DB:', chat);
 
     if (!chat) {
-      const title = await generateTitleFromUserMessage({
-        message: userMessage,
-      });
-      console.log('Generated title for new chat:', title);
-      await saveChat({ id, userId: session.user.id, title });
-      console.log('Saved new chat');
+      // Only create a new chat if we have a user message (not in approval workflow)
+      if (userMessage) {
+        const title = await generateTitleFromUserMessage({
+          message: userMessage,
+        });
+        logger.log('Generated title for new chat:', title);
+        await saveChat({ id, userId: session.user.id, title });
+        logger.log('Saved new chat');
+      }
     } else {
       if (chat.userId !== session.user.id) {
-        console.error('Chat userId does not match session user id');
+        logger.error('Chat userId does not match session user id');
         return new Response('Forbidden', { status: 403 });
       }
     }
 
     const previousMessages = await getMessagesByChatId({ id });
 
-    const formattedMessages = appendClientMessage({
-      // Convert DBMessage[] to compatible format for appendClientMessage
-      messages: previousMessages as any,
-      message: userMessage,
-    });
+    // Handle message formatting differently for approval workflow vs new user messages
+    let formattedMessages: any[];
+    if (isApprovalWorkflow) {
+      // For approval workflow, use the messages as-is since they contain the tool results
+      formattedMessages = messages as any[];
+      logger.log('[DEBUG] Using approval workflow messages directly');
+    } else if (userMessage) {
+      // For new user messages, append to previous messages
+      formattedMessages = appendClientMessage({
+        // Convert DBMessage[] to compatible format for appendClientMessage
+        messages: previousMessages as any,
+        message: userMessage,
+      });
+    } else {
+      // This shouldn't happen due to our earlier check, but handle it gracefully
+      logger.error('No user message and not approval workflow');
+      return new Response('Invalid message state', { status: 400 });
+    }
 
     // Clean up incomplete tool invocations to prevent AI_MessageConversionError
-    console.log(`[DEBUG] Processing ${formattedMessages.length} messages for tool invocation cleanup`);
+    logger.log(`[DEBUG] Processing ${formattedMessages.length} messages for tool invocation cleanup`);
     
     // Check for problematic tool invocations before cleanup
     const hasProblems = hasProblematicToolInvocations(formattedMessages);
     if (hasProblems) {
-      console.log(`[DEBUG] Found problematic tool invocations in messages, applying cleanup`);
+      logger.log(`[DEBUG] Found problematic tool invocations in messages, applying cleanup`);
     }
     
     const cleanedMessages = cleanupIncompleteToolInvocations(formattedMessages);
-    console.log(`[DEBUG] Applied cleanup to ${formattedMessages.length} messages to remove incomplete tool invocations`);
+    logger.log(`[DEBUG] Applied cleanup to ${formattedMessages.length} messages to remove incomplete tool invocations`);
+
+    // Process tool calls for approval workflow if needed
+    let processedMessages = cleanedMessages;
+    if (isApprovalWorkflow) {
+      logger.log('[DEBUG] Processing approval workflow tool calls');
+      // We'll handle this in the streamText execution since we need the dataStream
+    }
 
     const { longitude, latitude, city, country } = geolocation(request);
 
@@ -362,33 +347,56 @@ export async function POST(request: Request) {
         userPreferences = await getSystemPromptPreferences({ userId: session.user.id });
       }
     } catch (error) {
-      console.error('Failed to fetch user system prompt preferences:', error);
+      logger.error('Failed to fetch user system prompt preferences:', error);
       // Continue without preferences if fetch fails
     }
 
-    await saveMessages({
-      messages: [
-        {
-          chatId: id,
-          id: userMessage.id,
-          role: 'user',
-          parts: userMessage.parts,
-          attachments: userMessage.experimental_attachments ?? [],
-          createdAt: new Date(),
-        },
-      ],
-    });
-    console.log('Saved user message');
+    // Save user message, handling duplicate IDs gracefully
+    // Skip saving for approval workflows since no new user message is being added
+    if (userMessage && !isApprovalWorkflow) {
+      try {
+        // First check if the message already exists to avoid unnecessary database operations
+        const messageAlreadyExists = await messageExists({ id: userMessage.id });
+        
+        if (messageAlreadyExists) {
+          logger.log(`[DEBUG] Message ${userMessage.id} already exists in database, skipping save`);
+        } else {
+          await saveMessages({
+            messages: [
+              {
+                chatId: id,
+                id: userMessage.id,
+                role: 'user',
+                parts: userMessage.parts,
+                attachments: userMessage.experimental_attachments ?? [],
+                createdAt: new Date(),
+              },
+            ],
+          });
+          logger.log('Saved user message');
+        }
+      } catch (error: any) {
+        // Handle duplicate key violation as fallback (message already exists)
+        if (error?.code === '23505' && error?.details?.includes('already exists')) {
+          logger.log(`[DEBUG] Message ${userMessage.id} already exists in database (caught in fallback), skipping save`);
+        } else {
+          logger.error('Failed to save user message:', error);
+          throw error; // Re-throw other errors
+        }
+      }
+    } else if (isApprovalWorkflow) {
+      logger.log('[DEBUG] Skipping user message save for approval workflow');
+    }
 
     // Create a stream ID for this chat session if needed
     try {
       const streamIds = await getStreamIdsByChatId({ id });
       if (streamIds.length === 0) {
-        console.log(`Creating a new stream ID for chat ${id}`);
+        logger.log(`Creating a new stream ID for chat ${id}`);
         await createStreamId({ chatId: id });
       }
     } catch (error) {
-      console.error('Error checking/creating stream ID:', error);
+      logger.error('Error checking/creating stream ID:', error);
       // Continue processing even if stream ID creation fails
     }
 
@@ -397,7 +405,7 @@ export async function POST(request: Request) {
       model: myProvider.languageModel(selectedChatModel),
       // Use the system prompt with user preferences
       system: systemPrompt({ selectedChatModel, requestHints, userPreferences }), 
-      messages: cleanedMessages,
+      messages: processedMessages,
       maxSteps: 10,
       experimental_transform: smoothStream({ chunking: 'word' }),
       experimental_generateMessageId: generateUUID,
@@ -411,22 +419,22 @@ export async function POST(request: Request) {
 
         try {
           const mcpServerUrl = process.env.MCP_SERVER_URL;
-          console.log(`[DEBUG] MCP Server URL from env: ${mcpServerUrl}`);
+          logger.log(`[DEBUG] MCP Server URL from env: ${mcpServerUrl}`);
           if (!mcpServerUrl) {
-            console.error('[ERROR] MCP_SERVER_URL environment variable is not set.');
+            logger.error('[ERROR] MCP_SERVER_URL environment variable is not set.');
             throw new Error('MCP_SERVER_URL is not configured.');
           }
 
-          console.log(`[DEBUG] Attempting to get or create MCP client for user ${userId}`);
+          logger.log(`[DEBUG] Attempting to get or create MCP client for user ${userId}`);
           // TODO: For true multi-request session persistence, store and retrieve mcpConnection.sessionId
           mcpConnection = await getOrCreateMcpClient(mcpServerUrl, userId, undefined /* Pass stored sessionId here */, accessToken);
           
           if (!mcpConnection || !mcpConnection.client) {
-            console.error('[ERROR] Failed to get or create MCP client.');
+            logger.error('[ERROR] Failed to get or create MCP client.');
             throw new Error('Failed to establish MCP connection.');
           }
           const { client } = mcpConnection; // Use the client from the connection object
-          console.log(`[DEBUG] MCP Client obtained. Session ID: ${mcpConnection.sessionId}`);
+          logger.log(`[DEBUG] MCP Client obtained. Session ID: ${mcpConnection.sessionId}`);
 
           // The explicit client.connect() is no longer needed as getOrCreateMcpClient handles it.
           // The explicit client.listTools() is also likely not needed here,
@@ -434,31 +442,62 @@ export async function POST(request: Request) {
           // If serverTools are truly needed for constructing streamTextTools, call client.listTools() here.
           // For now, assuming tools are fetched if necessary or client is ready.
 
-          console.log('[DEBUG] Listing tools from MCP server...');
-          const serverToolsResponse = await client.listTools(); // Get the response object
-          console.log('[DEBUG] Raw listTools response:', JSON.stringify(serverToolsResponse, null, 2));
-          const serverTools = serverToolsResponse.tools || []; // Extract the tools array
-          console.log(`[DEBUG] Received ${serverTools.length} tools from server.`);
-          if (!Array.isArray(serverTools)) {
-            console.warn('[WARN] serverTools is not an array. Proceeding without dynamic tools.');
-          } else {
-            console.log('[DEBUG] Tool names:', serverTools.map(tool => tool.name));
-          }
+          logger.log('[DEBUG] Getting processed tools from cache...');
+          const processedTools = await getProcessedTools(userId, client);
+          logger.log(`[DEBUG] Received ${processedTools.length} processed tools.`);
 
+          // Create a map of tools for easy lookup
+          const mcpToolsMap: Record<string, any> = {};
+          processedTools.forEach(tool => {
+            mcpToolsMap[tool.name] = tool.originalTool;
+          });
+
+          // Process tool calls for human-in-the-loop approval
+          const finalProcessedMessages = await processToolCalls(
+            {
+              messages: processedMessages,
+              dataStream,
+              tools: mcpToolsMap,
+            },
+            // Execute functions for destructive tools that require approval
+            Object.fromEntries(
+              processedTools
+                .filter(tool => tool.isDestructive)
+                .map(tool => [
+                  tool.name,
+                  async (args: any) => {
+                    logger.log(`[DEBUG] Executing approved destructive tool '${tool.name}' with args:`, args);
+                    try {
+                      const result = await client.callTool({
+                        name: tool.name,
+                        arguments: args,
+                      });
+                      logger.log(`[DEBUG] Destructive tool '${tool.name}' execution result:`, result);
+                      return result.result ?? result;
+                    } catch (toolError) {
+                      logger.error(`[ERROR] Error executing destructive tool '${tool.name}':`, toolError);
+                      throw toolError;
+                    }
+                  }
+                ])
+            )
+          );
 
           const streamTextTools: Record<string, any> = {};
-          // Ensure serverTools is an array before iterating
-          if (Array.isArray(serverTools)) {
-            for (const toolDefinition of serverTools) {
-              const toolName = toolDefinition.name;
-              console.log(`[DEBUG] Processing tool: ${toolName}`);
-              console.log(`[DEBUG] Tool input schema:`, JSON.stringify(toolDefinition.inputSchema, null, 2));
-              streamTextTools[toolName] = {
-                description: toolDefinition.description,
-                parameters: convertMcpSchemaToZod(toolDefinition.inputSchema), 
+          // Build tools for streamText using processed tools
+          for (const processedTool of processedTools) {
+            const toolName = processedTool.name;
+            const isDestructive = processedTool.isDestructive;
+            
+            logger.log(`[DEBUG] Processing tool: ${toolName} (destructive: ${isDestructive})`);
+            
+            streamTextTools[toolName] = {
+              description: processedTool.description,
+              parameters: processedTool.zodSchema,
+              // Only add execute function for non-destructive tools
+              ...(isDestructive ? {} : {
                 execute: async (args: any) => {
-                  console.log(`[DEBUG] Executing tool '${toolName}' via MCP Client with args:`, args);
-                  // Client is already obtained from mcpConnection
+                  logger.log(`[DEBUG] Executing non-destructive tool '${toolName}' via MCP Client with args:`, args);
                   
                   if (!client) {
                      throw new Error("MCP Client is not available");
@@ -468,69 +507,89 @@ export async function POST(request: Request) {
                       name: toolName,
                       arguments: args,
                     });
-                    console.log(`[DEBUG] Tool '${toolName}' execution result:`, result);
+                    logger.log(`[DEBUG] Tool '${toolName}' execution result:`, result);
                     return result.result ?? result; 
                   } catch (toolError) {
-                    console.error(`[ERROR] Error executing tool '${toolName}':`, toolError);
+                    logger.error(`[ERROR] Error executing tool '${toolName}':`, toolError);
                     throw toolError;
                   }
                 },
-              };
-            }
+              })
+            };
           }
-          console.log('[DEBUG] Finished building tools for streamText.');
+          logger.log('[DEBUG] Finished building tools for streamText.');
 
-          // Call streamText with the dynamically built tools
+          // Call streamText with the dynamically built tools and processed messages
           const result = streamText({
             ...streamTextConfig,
+            messages: finalProcessedMessages,
             tools: streamTextTools,
-            onFinish: async ({ response }) => {
-              // Disconnect the MCP client when finished
-              console.log('[DEBUG] Disconnecting MCP client in onFinish for user:', userId);
-              if (mcpConnection) { // Check if connection was established
-                 try {
-                    await disconnectMcpClient(userId);
-                    console.log('[DEBUG] MCP client disconnected successfully via disconnectMcpClient.');
-                } catch (disconnectError) {
-                    console.error('[ERROR] Error disconnecting MCP client via disconnectMcpClient:', disconnectError);
-                }
-              } else {
-                console.log('[DEBUG] MCP connection was not established, skipping disconnect.');
-              }
-
-              if (session.user?.id) {
+            onFinish: async (response) => {
+              // Save assistant messages for both regular and approval workflows
+              // This ensures that pending tool calls are persisted and survive page reloads
+              if (session?.user?.id) {
                 try {
-                  const assistantId = getTrailingMessageId({
-                    messages: response.messages.filter(
-                      (message) => message.role === 'assistant',
-                    ),
-                  });
-
-                  if (!assistantId) {
-                    throw new Error('No assistant message found!');
+                  logger.log('[DEBUG] Saving assistant message');
+                  
+                  // Build the parts array for the assistant message
+                  const parts: any[] = [];
+                  
+                  // Add text content if available
+                  if (response.text) {
+                    parts.push({ type: 'text', text: response.text });
                   }
+                  
+                  // Add tool calls if available
+                  if (response.toolCalls && response.toolCalls.length > 0) {
+                    for (const toolCall of response.toolCalls) {
+                      parts.push({
+                        type: 'tool-invocation',
+                        toolInvocation: {
+                          state: 'call',
+                          toolCallId: toolCall.toolCallId,
+                          toolName: toolCall.toolName,
+                          args: toolCall.args,
+                        },
+                      });
+                    }
+                  }
+                  
+                  // Add tool results if available
+                  if (response.toolResults && response.toolResults.length > 0) {
+                    for (const toolResult of response.toolResults) {
+                      parts.push({
+                        type: 'tool-invocation',
+                        toolInvocation: {
+                          state: 'result',
+                          toolCallId: toolResult.toolCallId,
+                          toolName: toolResult.toolName,
+                          args: toolResult.args,
+                          result: toolResult.result,
+                        },
+                      });
+                    }
+                  }
+                  
+                  // Only save if we have content to save
+                  if (parts.length > 0) {
+                    const assistantMessage = {
+                      id: generateUUID(),
+                      chatId: id,
+                      role: 'assistant' as const,
+                      parts: parts,
+                      attachments: [],
+                      createdAt: new Date(),
+                    };
 
-                  const [, assistantMessage] = appendResponseMessages({
-                    messages: [userMessage],
-                    responseMessages: response.messages,
-                  });
-
-                  await saveMessages({
-                    messages: [
-                      {
-                        id: assistantId,
-                        chatId: id,
-                        role: assistantMessage.role,
-                        parts: assistantMessage.parts,
-                        attachments:
-                          assistantMessage.experimental_attachments ?? [],
-                        createdAt: new Date(),
-                      },
-                    ],
-                  });
-                  console.log('Saved assistant message');
+                    // Save the assistant message to the database
+                    await saveMessages({
+                      messages: [assistantMessage],
+                    });
+                    
+                    logger.log('[DEBUG] Assistant message saved successfully with', parts.length, 'parts');
+                  }
                 } catch (err) {
-                  console.error('Failed to save chat', err);
+                  logger.error('Failed to save assistant message:', err);
                 }
               }
             },
@@ -546,7 +605,7 @@ export async function POST(request: Request) {
             sendReasoning: true,
           });
         } catch (mcpError) {
-          console.error('[ERROR] Failed during MCP client setup, connection, or tool processing:', mcpError);
+          logger.error('[ERROR] Failed during MCP client setup, connection, or tool processing:', mcpError);
           // When execute fails, the error should propagate to createDataStream's onError
           // dataStream.error(mcpError instanceof Error ? mcpError.message : 'Failed during MCP setup');
           // dataStream.close();
@@ -555,27 +614,27 @@ export async function POST(request: Request) {
 
           // Disconnect the MCP client if it was initialized
           if (mcpConnection) { // Check if connection was established
-            console.log('[DEBUG] Disconnecting MCP client due to error for user:', userId);
+            logger.log('[DEBUG] Disconnecting MCP client due to error for user:', userId);
             try {
                  await disconnectMcpClient(userId);
-                 console.log('[DEBUG] MCP client disconnected after error via disconnectMcpClient.');
+                 logger.log('[DEBUG] MCP client disconnected after error via disconnectMcpClient.');
             } catch (disconnectError) {
-                console.error('[ERROR] Error disconnecting MCP client after error via disconnectMcpClient:', disconnectError);
+                logger.error('[ERROR] Error disconnecting MCP client after error via disconnectMcpClient:', disconnectError);
             }
           }
           throw mcpError; 
         }
       },
       onError: (error) => {
-        console.error('[DEBUG] Error in createDataStreamResponse (outer onError):', error);
+        logger.error('[DEBUG] Error in createDataStreamResponse (outer onError):', error);
         // Log the full error details including stack trace
         if (error instanceof Error) {
-          console.error('[DEBUG] Error message:', error.message);
-          console.error('[DEBUG] Error stack:', error.stack);
+          logger.error('[DEBUG] Error message:', error.message);
+          logger.error('[DEBUG] Error stack:', error.stack);
           
           // Handle specific AI_MessageConversionError for tool invocations
           if (error.message.includes('ToolInvocation must have a result')) {
-            console.error('[ERROR] Tool invocation without result detected. This should have been cleaned up.');
+            logger.error('[ERROR] Tool invocation without result detected. This should have been cleaned up.');
             return 'There was an issue with a previous tool call. Please try starting a new conversation.';
           }
           
@@ -584,24 +643,24 @@ export async function POST(request: Request) {
             return 'There was an error with the AI service. Please try again later.';
           }
         } else {
-          console.error('[DEBUG] Non-Error object thrown:', error);
+          logger.error('[DEBUG] Non-Error object thrown:', error);
         }
         return 'An error occurred while processing your request. Please try again.';
       },
     });
   } catch (error) {
-    console.error('[DEBUG] POST /api/chat error (outer catch):', error);
+    logger.error('[DEBUG] POST /api/chat error (outer catch):', error);
     // Log the full error details including stack trace
     if (error instanceof Error) {
-      console.error('[DEBUG] Error message:', error.message);
-      console.error('[DEBUG] Error stack:', error.stack);
+      logger.error('[DEBUG] Error message:', error.message);
+      logger.error('[DEBUG] Error stack:', error.stack);
       
       // Provide better error messaging based on error type
       if (error.message.includes('bedrock') || error.message.includes('model')) {
         return new Response('There was an error with the AI service. Please try again later.', { status: 500 });
       }
     } else {
-      console.error('[DEBUG] Non-Error object thrown:', error);
+      logger.error('[DEBUG] Non-Error object thrown:', error);
     }
     return new Response('An error occurred while processing your request. Please try again.', {
       status: 500,
@@ -643,10 +702,10 @@ export async function GET(request: Request) {
 
   // If no streams exist for this chat, create one
   if (!streamIds.length) {
-    console.log(`No stream IDs found for chat ${chatId}, creating a new one`);
+    logger.log(`No stream IDs found for chat ${chatId}, creating a new one`);
     const newStreamId = await createStreamId({ chatId });
     streamIds = [newStreamId];
-    console.log(`Created new stream ID ${newStreamId} for chat ${chatId}`);
+    logger.log(`Created new stream ID ${newStreamId} for chat ${chatId}`);
   }
 
   const recentStreamId = streamIds.at(-1);
@@ -692,7 +751,7 @@ export async function DELETE(request: Request) {
 
     return Response.json(deletedChat, { status: 200 });
   } catch (error) {
-    console.error(error);
+    logger.error(error);
     return new Response('An error occurred while processing your request!', {
       status: 500,
     });

@@ -2,6 +2,52 @@
 
 This module provides a TypeScript client for interacting with an MCP (Model Context Protocol) server using the **official @modelcontextprotocol/sdk** with **Streamable HTTP transport** and **persistent M365 access token authorization**.
 
+## 🚀 Performance Improvements (Latest Update)
+
+### Timeout & Connection Management
+- **Extended Timeouts**: 60-second default timeout (configurable) to handle M365 API latency
+- **Intelligent Health Checking**: Lightweight connection validation with 30-second intervals
+- **Connection Pooling**: Reuse healthy connections across requests to reduce overhead
+- **Retry Logic**: Exponential backoff for failed operations (3 attempts with increasing delays)
+
+### Caching Optimizations
+- **Extended Cache TTL**: 10-minute tool cache (increased from 5 minutes)
+- **Hash-based Invalidation**: Only re-process tools when they actually change
+- **Fallback Caching**: Return cached tools when server is temporarily unavailable
+- **Cache Statistics**: Monitor cache hit rates and efficiency
+
+### Monitoring & Debugging
+- **Real-time Health Monitoring**: Track connection health and failure patterns
+- **Performance Metrics**: Monitor cache efficiency and connection statistics
+- **Debug API**: REST endpoints for monitoring and troubleshooting
+- **Automatic Recovery**: Detect and recover from unhealthy connections
+
+### Configuration
+```typescript
+// Timeout settings
+const DEFAULT_TIMEOUT = 60000; // 60 seconds
+const CONNECTION_HEALTH_CHECK_INTERVAL = 30000; // 30 seconds
+const TOOL_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+// Usage with custom timeout
+const connection = await getOrCreateMcpClient(
+  mcpUrl, userId, sessionId, accessToken,
+  { timeout: 60000 } // Custom timeout
+);
+```
+
+### Monitoring API
+```bash
+# Get connection status
+GET /api/mcp-status
+
+# Control actions
+POST /api/mcp-status
+{
+  "action": "refresh" | "clearCache" | "startMonitoring" | "stopMonitoring"
+}
+```
+
 ## ⚠️ Breaking Changes
 
 This module has been **completely refactored** to use the official MCP SDK instead of the legacy custom implementation. Key changes:

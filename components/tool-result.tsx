@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDownIcon } from './icons';
 import { cn } from '@/lib/utils';
+import { useToolsMetadata } from '@/hooks/use-tools-metadata';
 
 interface ToolResultProps {
   toolName: string;
@@ -13,6 +14,13 @@ interface ToolResultProps {
 
 export function ToolResult({ toolName, result, children }: ToolResultProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const { getToolMetadata } = useToolsMetadata();
+  const toolMetadata = getToolMetadata(toolName);
+  
+  // Always ensure we have a display name - prioritize user-friendly names but always fallback to toolName
+  const displayName = toolMetadata?.annotations?.title || 
+                     toolMetadata?.description || 
+                     toolName;
 
   const variants = {
     collapsed: {
@@ -33,7 +41,7 @@ export function ToolResult({ toolName, result, children }: ToolResultProps) {
     <div className="flex flex-col">
       <div className="flex flex-row gap-2 items-center">
         <div className="text-sm text-muted-foreground">
-          Called <span className="font-mono font-medium">{toolName}</span>
+          Called <span className="font-medium">{displayName}</span>
         </div>
         <button
           type="button"

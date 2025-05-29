@@ -65,6 +65,7 @@ function PureArtifact({
   messages,
   setMessages,
   reload,
+  addToolResult,
   votes,
   isReadonly,
   selectedVisibilityType,
@@ -82,6 +83,7 @@ function PureArtifact({
   append: UseChatHelpers['append'];
   handleSubmit: UseChatHelpers['handleSubmit'];
   reload: UseChatHelpers['reload'];
+  addToolResult: ({ toolCallId, result }: { toolCallId: string; result: any }) => void;
   isReadonly: boolean;
   selectedVisibilityType: VisibilityType;
 }) {
@@ -322,6 +324,7 @@ function PureArtifact({
                   reload={reload}
                   isReadonly={isReadonly}
                   artifactStatus={artifact.status}
+                  addToolResult={addToolResult}
                 />
 
                 <form className="flex flex-row gap-2 relative items-end w-full px-4 pb-4">

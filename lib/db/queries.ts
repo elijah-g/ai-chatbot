@@ -1,5 +1,8 @@
 import 'server-only';
 import { createClient } from '@supabase/supabase-js';
+import { desc, eq, and, gte, sql } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
 
 import type {
   User,
@@ -10,6 +13,7 @@ import type {
 import type { ArtifactKind } from '@/components/artifact';
 import { generateUUID } from '../utils';
 import { generateHashedPassword } from './utils';
+import { logger } from '../utils/logger';
 
 // Optionally, if not using email/pass login, you can
 // use the Drizzle adapter for Auth.js / NextAuth
@@ -22,7 +26,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 export async function getUser(email: string): Promise<Array<User>> {
   const { data, error } = await supabase.from('User').select('*').eq('email', email);
   if (error) {
-    console.error('Failed to get user from database', error);
+    logger.error('Failed to get user from database', error);
     throw error;
   }
   return data || [];
@@ -39,7 +43,7 @@ export async function createUser(email: string, password: string) {
       updated_at: new Date()
     }]);
   if (error) {
-    console.error('Failed to create user in database', error);
+    logger.error('Failed to create user in database', error);
     throw error;
   }
   return data;
@@ -56,7 +60,7 @@ export async function saveChat({ id, userId, title }: { id: string; userId: stri
       updated_at: new Date()
     }]);
   if (error) {
-    console.error('Failed to save chat in database', error);
+    logger.error('Failed to save chat in database', error);
     throw error;
   }
   return data;
@@ -65,17 +69,17 @@ export async function saveChat({ id, userId, title }: { id: string; userId: stri
 export async function deleteChatById({ id }: { id: string }) {
   const { error: voteError } = await supabase.from('Vote_v2').delete().eq('chatId', id);
   if (voteError) {
-    console.error('Failed to delete votes by chat id', voteError);
+    logger.error('Failed to delete votes by chat id', voteError);
     throw voteError;
   }
   const { error: messageError } = await supabase.from('Message_v2').delete().eq('chatId', id);
   if (messageError) {
-    console.error('Failed to delete messages by chat id', messageError);
+    logger.error('Failed to delete messages by chat id', messageError);
     throw messageError;
   }
   const { data, error } = await supabase.from('Chat').delete().eq('id', id).select();
   if (error) {
-    console.error('Failed to delete chat by id from database', error);
+    logger.error('Failed to delete chat by id from database', error);
     throw error;
   }
   return data?.[0];
@@ -96,7 +100,7 @@ export async function getChatsByUserId({ id, limit, startingAfter, endingBefore 
   }
   const { data, error } = await query;
   if (error) {
-    console.error('Failed to get chats by user from database', error);
+    logger.error('Failed to get chats by user from database', error);
     throw error;
   }
   const hasMore = (data?.length || 0) > limit;
@@ -113,7 +117,7 @@ export async function getChatById({ id }: { id: string }) {
       // No rows found
       return null;
     }
-    console.error('Failed to get chat by id from database', error);
+    logger.error('Failed to get chat by id from database', error);
     throw error;
   }
   return data;
@@ -122,7 +126,7 @@ export async function getChatById({ id }: { id: string }) {
 export async function saveMessages({ messages }: { messages: Array<DBMessage>; }) {
   const { data, error } = await supabase.from('Message_v2').insert(messages);
   if (error) {
-    console.error('Failed to save messages in database', error);
+    logger.error('Failed to save messages in database', error);
     throw error;
   }
   return data;
@@ -131,7 +135,7 @@ export async function saveMessages({ messages }: { messages: Array<DBMessage>; }
 export async function getMessagesByChatId({ id }: { id: string }) {
   const { data, error } = await supabase.from('Message_v2').select('*').eq('chatId', id).order('createdAt', { ascending: true });
   if (error) {
-    console.error('Failed to get messages by chat id from database', error);
+    logger.error('Failed to get messages by chat id from database', error);
     throw error;
   }
   return data || [];
@@ -155,7 +159,7 @@ export async function voteMessage({ chatId, messageId, type }: { chatId: string;
 export async function getVotesByChatId({ id }: { id: string }) {
   const { data, error } = await supabase.from('Vote_v2').select('*').eq('chatId', id);
   if (error) {
-    console.error('Failed to get votes by chat id from database', error);
+    logger.error('Failed to get votes by chat id from database', error);
     throw error;
   }
   return data || [];
@@ -164,7 +168,7 @@ export async function getVotesByChatId({ id }: { id: string }) {
 export async function saveDocument({ id, title, kind, content, userId }: { id: string; title: string; kind: ArtifactKind; content: string; userId: string; }) {
   const { data, error } = await supabase.from('Document').insert([{ id, title, kind, content, userId, createdAt: new Date() }]);
   if (error) {
-    console.error('Failed to save document in database', error);
+    logger.error('Failed to save document in database', error);
     throw error;
   }
   return data;
@@ -173,7 +177,7 @@ export async function saveDocument({ id, title, kind, content, userId }: { id: s
 export async function getDocumentsById({ id }: { id: string }) {
   const { data, error } = await supabase.from('Document').select('*').eq('id', id).order('createdAt', { ascending: true });
   if (error) {
-    console.error('Failed to get documents by id from database', error);
+    logger.error('Failed to get documents by id from database', error);
     throw error;
   }
   return data || [];
@@ -182,7 +186,7 @@ export async function getDocumentsById({ id }: { id: string }) {
 export async function getDocumentById({ id }: { id: string }) {
   const { data, error } = await supabase.from('Document').select('*').eq('id', id).order('createdAt', { ascending: false }).single();
   if (error) {
-    console.error('Failed to get document by id from database', error);
+    logger.error('Failed to get document by id from database', error);
     throw error;
   }
   return data;
@@ -191,12 +195,12 @@ export async function getDocumentById({ id }: { id: string }) {
 export async function deleteDocumentsByIdAfterTimestamp({ id, timestamp }: { id: string; timestamp: Date; }) {
   const { error: suggestionError } = await supabase.from('Suggestion').delete().eq('documentId', id).gt('documentCreatedAt', timestamp);
   if (suggestionError) {
-    console.error('Failed to delete suggestions by document id after timestamp', suggestionError);
+    logger.error('Failed to delete suggestions by document id after timestamp', suggestionError);
     throw suggestionError;
   }
   const { data, error } = await supabase.from('Document').delete().eq('id', id).gt('createdAt', timestamp);
   if (error) {
-    console.error('Failed to delete documents by id after timestamp from database', error);
+    logger.error('Failed to delete documents by id after timestamp from database', error);
     throw error;
   }
   return data;
@@ -205,7 +209,7 @@ export async function deleteDocumentsByIdAfterTimestamp({ id, timestamp }: { id:
 export async function saveSuggestions({ suggestions }: { suggestions: Array<Suggestion>; }) {
   const { data, error } = await supabase.from('Suggestion').insert(suggestions);
   if (error) {
-    console.error('Failed to save suggestions in database', error);
+    logger.error('Failed to save suggestions in database', error);
     throw error;
   }
   return data;
@@ -214,7 +218,7 @@ export async function saveSuggestions({ suggestions }: { suggestions: Array<Sugg
 export async function getSuggestionsByDocumentId({ documentId }: { documentId: string; }) {
   const { data, error } = await supabase.from('Suggestion').select('*').eq('documentId', documentId);
   if (error) {
-    console.error('Failed to get suggestions by document id from database', error);
+    logger.error('Failed to get suggestions by document id from database', error);
     throw error;
   }
   return data || [];
@@ -223,28 +227,41 @@ export async function getSuggestionsByDocumentId({ documentId }: { documentId: s
 export async function getMessageById({ id }: { id: string }) {
   const { data, error } = await supabase.from('Message_v2').select('*').eq('id', id).single();
   if (error) {
-    console.error('Failed to get message by id from database', error);
+    logger.error('Failed to get message by id from database', error);
     throw error;
   }
   return data;
 }
 
+export async function messageExists({ id }: { id: string }): Promise<boolean> {
+  const { data, error } = await supabase.from('Message_v2').select('id').eq('id', id).single();
+  if (error) {
+    // If error code is PGRST116, it means no rows found (message doesn't exist)
+    if (error.code === 'PGRST116') {
+      return false;
+    }
+    logger.error('Failed to check if message exists in database', error);
+    throw error;
+  }
+  return !!data;
+}
+
 export async function deleteMessagesByChatIdAfterTimestamp({ chatId, timestamp }: { chatId: string; timestamp: Date; }) {
   const { data: messagesToDelete, error: selectError } = await supabase.from('Message_v2').select('id').eq('chatId', chatId).gte('createdAt', timestamp);
   if (selectError) {
-    console.error('Failed to select messages for deletion', selectError);
+    logger.error('Failed to select messages for deletion', selectError);
     throw selectError;
   }
   const messageIds = (messagesToDelete || []).map((message) => message.id);
   if (messageIds.length > 0) {
     const { error: voteError } = await supabase.from('Vote_v2').delete().eq('chatId', chatId).in('messageId', messageIds);
     if (voteError) {
-      console.error('Failed to delete votes for messages', voteError);
+      logger.error('Failed to delete votes for messages', voteError);
       throw voteError;
     }
     const { data, error } = await supabase.from('Message_v2').delete().eq('chatId', chatId).in('id', messageIds);
     if (error) {
-      console.error('Failed to delete messages', error);
+      logger.error('Failed to delete messages', error);
       throw error;
     }
     return data;
@@ -255,7 +272,7 @@ export async function deleteMessagesByChatIdAfterTimestamp({ chatId, timestamp }
 export async function updateChatVisiblityById({ chatId, visibility }: { chatId: string; visibility: 'private' | 'public'; }) {
   const { data, error } = await supabase.from('Chat').update({ visibility }).eq('id', chatId);
   if (error) {
-    console.error('Failed to update chat visibility in database', error);
+    logger.error('Failed to update chat visibility in database', error);
     throw error;
   }
   return data;
@@ -265,7 +282,7 @@ export async function getMessageCountByUserId({ id, differenceInHours }: { id: s
   const twentyFourHoursAgo = new Date(Date.now() - differenceInHours * 60 * 60 * 1000).toISOString();
   const { data, error } = await supabase.from('Message_v2').select('id', { count: 'exact' }).eq('role', 'user').gte('createdAt', twentyFourHoursAgo);
   if (error) {
-    console.error('Failed to get message count by user id', error);
+    logger.error('Failed to get message count by user id', error);
     throw error;
   }
   return data?.length || 0;
@@ -280,18 +297,18 @@ export async function findOrCreateAzureADUser(email: string) {
       .eq('email', email);
     
     if (findError) {
-      console.error('Failed to find user in database', findError);
+      logger.error('Failed to find user in database', findError);
       throw findError;
     }
     
     // If user exists, return it
     if (existingUsers && existingUsers.length > 0) {
-      console.log(`Found existing user with email ${email}`);
+      logger.log(`Found existing user with email ${email}`);
       return existingUsers[0];
     }
     
     // If user doesn't exist, create a new one without password (SSO user)
-    console.log(`Creating new user for email ${email}`);
+    logger.log(`Creating new user for email ${email}`);
     const now = new Date();
     const { data: newUsers, error: createError } = await supabase
       .from('User')
@@ -303,7 +320,7 @@ export async function findOrCreateAzureADUser(email: string) {
       .select('*');
     
     if (createError) {
-      console.error('Failed to create user in database', createError);
+      logger.error('Failed to create user in database', createError);
       throw createError;
     }
     
@@ -313,7 +330,7 @@ export async function findOrCreateAzureADUser(email: string) {
     
     return newUsers[0];
   } catch (error) {
-    console.error('Error in findOrCreateAzureADUser:', error);
+    logger.error('Error in findOrCreateAzureADUser:', error);
     throw error;
   }
 }
@@ -329,17 +346,17 @@ export async function createStreamId({ chatId }: { chatId: string }) {
         createdAt: new Date() 
       }]);
     if (error) {
-      console.error('Failed to create stream id in database', error);
+      logger.error('Failed to create stream id in database', error);
       // If the error is because the table doesn't exist, just return the generated ID
       if (error.code === '42P01') { // PostgreSQL code for "relation does not exist"
-        console.log('Stream table does not exist yet, returning generated ID without saving');
+        logger.log('Stream table does not exist yet, returning generated ID without saving');
         return streamId;
       }
       throw error;
     }
     return streamId;
   } catch (error) {
-    console.error('Error in createStreamId:', error);
+    logger.error('Error in createStreamId:', error);
     // Return a newly generated UUID as a fallback to prevent app crashing
     return generateUUID();
   }
@@ -349,7 +366,7 @@ export async function getStreamIdsByChatId({ id }: { id: string }) {
   try {
     // Check if id is valid
     if (!id || id === "undefined") {
-      console.log('Invalid chatId provided to getStreamIdsByChatId:', id);
+      logger.log('Invalid chatId provided to getStreamIdsByChatId:', id);
       return [];
     }
     
@@ -359,17 +376,17 @@ export async function getStreamIdsByChatId({ id }: { id: string }) {
       .eq('chatId', id)
       .order('createdAt', { ascending: true });
     if (error) {
-      console.error('Failed to get stream ids by chat id from database', error);
+      logger.error('Failed to get stream ids by chat id from database', error);
       // If the error is because the table doesn't exist, return an empty array
       if (error.code === '42P01') { // PostgreSQL code for "relation does not exist"
-        console.log('Stream table does not exist yet, returning empty array');
+        logger.log('Stream table does not exist yet, returning empty array');
         return [];
       }
       throw error;
     }
     return data?.map(stream => stream.id) || [];
   } catch (error) {
-    console.error('Error in getStreamIdsByChatId:', error);
+    logger.error('Error in getStreamIdsByChatId:', error);
     // Return an empty array as a fallback to prevent app crashing
     return [];
   }
@@ -388,7 +405,7 @@ export async function getSystemPromptPreferences({ userId }: { userId: string })
       // No rows found - return null to indicate no preferences set
       return null;
     }
-    console.error('Failed to get system prompt preferences from database', error);
+    logger.error('Failed to get system prompt preferences from database', error);
     throw error;
   }
   
@@ -415,7 +432,7 @@ export async function createSystemPromptPreferences({
     .single();
   
   if (error) {
-    console.error('Failed to create system prompt preferences in database', error);
+    logger.error('Failed to create system prompt preferences in database', error);
     throw error;
   }
   
@@ -440,7 +457,7 @@ export async function updateSystemPromptPreferences({
     .single();
   
   if (error) {
-    console.error('Failed to update system prompt preferences in database', error);
+    logger.error('Failed to update system prompt preferences in database', error);
     throw error;
   }
   

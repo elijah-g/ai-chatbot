@@ -3,6 +3,7 @@ import { useM365Mcp } from './use-m365-mcp';
 import { toast } from '@/components/toast';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { logger } from '@/lib/utils/logger';
 
 export function useM365WithAuth() {
   const { data: session, status, update } = useSession();
@@ -19,7 +20,7 @@ export function useM365WithAuth() {
   // Function to check if token needs refresh and refresh it if necessary
   const checkAndRefreshToken = async (): Promise<boolean> => {
     if (!session?.user?.accessToken) {
-      console.log("No access token available");
+      logger.log("No access token available");
       return false;
     }
     
@@ -28,13 +29,13 @@ export function useM365WithAuth() {
     const fiveMinutesFromNow = Date.now() + (5 * 60 * 1000);
     
     if (tokenExpiry && fiveMinutesFromNow > tokenExpiry) {
-      console.log("Token expiring soon, triggering refresh...");
+      logger.log("Token expiring soon, triggering refresh...");
       try {
         await update(); // This will trigger the JWT callback and refresh the token
-        console.log("Token refresh completed");
+        logger.log("Token refresh completed");
         return true;
       } catch (error) {
-        console.error("Failed to refresh token:", error);
+        logger.error("Failed to refresh token:", error);
         return false;
       }
     }
@@ -96,7 +97,7 @@ export function useM365WithAuth() {
       const result = await m365Client.invokeTool(toolName, params);
       return result;
     } catch (error) {
-      console.error(`Error invoking M365 tool ${toolName}:`, error);
+      logger.error(`Error invoking M365 tool ${toolName}:`, error);
       
       // Handle authentication errors specifically
       if (error instanceof Error && (
