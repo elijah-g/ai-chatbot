@@ -1172,3 +1172,41 @@ export const WarningIcon = ({ size = 16 }: { size?: number }) => {
     </svg>
   );
 };
+
+export const SpeakerIcon = ({ size = 16 }: { size?: number }) => {
+  return (
+    <svg
+      height={size}
+      strokeLinejoin="round"
+      viewBox="0 0 16 16"
+      width={size}
+      style={{ color: 'currentcolor' }}
+    >
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M8.5 2.75C8.5 2.33579 8.16421 2 7.75 2C7.33579 2 7 2.33579 7 2.75V13.25C7 13.6642 7.33579 14 7.75 14C8.16421 14 8.5 13.6642 8.5 13.25V2.75ZM6 5.5C6 5.22386 5.77614 5 5.5 5H3.5C2.67157 5 2 5.67157 2 6.5V9.5C2 10.3284 2.67157 11 3.5 11H5.5C5.77614 11 6 10.7761 6 10.5V5.5ZM10.5 5.5C10.2239 5.5 10 5.72386 10 6V10C10 10.2761 10.2239 10.5 10.5 10.5C11.3284 10.5 12 9.82843 12 9V7C12 6.17157 11.3284 5.5 10.5 5.5ZM13.5 4C13.2239 4 13 4.22386 13 4.5V11.5C13 11.7761 13.2239 12 13.5 12C14.3284 12 15 11.3284 15 10.5V5.5C15 4.67157 14.3284 4 13.5 4Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+};
+
+export const PauseIcon = ({ size = 16 }: { size?: number }) => {
+  return (
+    <svg
+      height={size}
+      strokeLinejoin="round"
+      viewBox="0 0 16 16"
+      width={size}
+      style={{ color: 'currentcolor' }}
+    >
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M4.5 2C3.94772 2 3.5 2.44772 3.5 3V13C3.5 13.5523 3.94772 14 4.5 14H6C6.55228 14 7 13.5523 7 13V3C7 2.44772 6.55228 2 6 2H4.5ZM10 2C9.44772 2 9 2.44772 9 3V13C9 13.5523 9.44772 14 10 14H11.5C12.0523 14 12.5 13.5523 12.5 13V3C12.5 2.44772 12.0523 2 11.5 2H10Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+};

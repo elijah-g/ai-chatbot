@@ -65,6 +65,13 @@ export class ArtifactPage {
           .getByTestId('message-reasoning-toggle')
           .click();
       },
+      async readAloud() {
+        await lastMessageElement.getByTestId('message-read-aloud').click();
+      },
+      async pauseAudio() {
+        // Click the same button to pause if audio is playing
+        await lastMessageElement.getByTestId('message-read-aloud').click();
+      },
     };
   }
 

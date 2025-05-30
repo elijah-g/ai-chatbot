@@ -170,6 +170,13 @@ export class ChatPage {
       async downvote() {
         await lastMessageElement.getByTestId('message-downvote').click();
       },
+      async readAloud() {
+        await lastMessageElement.getByTestId('message-read-aloud').click();
+      },
+      async pauseAudio() {
+        // Click the same button to pause if audio is playing
+        await lastMessageElement.getByTestId('message-read-aloud').click();
+      },
     };
   }
 

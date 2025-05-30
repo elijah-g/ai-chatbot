@@ -4,7 +4,7 @@ import { useCopyToClipboard } from 'usehooks-ts';
 
 import type { Vote } from '@/lib/db/schema';
 
-import { CopyIcon, ThumbDownIcon, ThumbUpIcon } from './icons';
+import { CopyIcon, ThumbDownIcon, ThumbUpIcon, SpeakerIcon, PauseIcon } from './icons';
 import { Button } from './ui/button';
 import {
   Tooltip,
@@ -15,6 +15,7 @@ import {
 import { memo } from 'react';
 import equal from 'fast-deep-equal';
 import { toast } from 'sonner';
+import { useTextToSpeech } from '@/hooks/use-text-to-speech';
 
 export function PureMessageActions({
   chatId,
@@ -29,9 +30,43 @@ export function PureMessageActions({
 }) {
   const { mutate } = useSWRConfig();
   const [_, copyToClipboard] = useCopyToClipboard();
+  const { speak, toggle, isLoading: isSpeechLoading, isPlaying } = useTextToSpeech();
 
   if (isLoading) return null;
   if (message.role === 'user') return null;
+
+  const handleReadAloud = async () => {
+    // If audio is already playing, toggle pause/resume
+    if (isPlaying) {
+      toggle();
+      return;
+    }
+
+    // If not playing, start new speech
+    const textFromParts = message.parts
+      ?.filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n')
+      .trim();
+
+    if (!textFromParts) {
+      toast.error("There's no text to read!");
+      return;
+    }
+
+    await speak(textFromParts);
+  };
+
+  const getTooltipText = () => {
+    if (isSpeechLoading) return 'Generating speech...';
+    if (isPlaying) return 'Pause';
+    return 'Read aloud';
+  };
+
+  const getIcon = () => {
+    if (isPlaying) return <PauseIcon />;
+    return <SpeakerIcon />;
+  };
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -61,6 +96,21 @@ export function PureMessageActions({
             </Button>
           </TooltipTrigger>
           <TooltipContent>Copy</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              data-testid="message-read-aloud"
+              className="py-1 px-2 h-fit text-muted-foreground"
+              variant="outline"
+              onClick={handleReadAloud}
+              disabled={isSpeechLoading}
+            >
+              {getIcon()}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{getTooltipText()}</TooltipContent>
         </Tooltip>
 
         <Tooltip>

@@ -50,6 +50,10 @@ You will need to use the environment variables [defined in `.env.example`](.env.
 
 > Note: You should not commit your `.env` file or it will expose secrets that will allow others to control access to your various AI and authentication provider accounts.
 
+### Model Configuration
+
+The application now supports configurable AI model IDs through environment variables. See [MODEL_CONFIGURATION.md](MODEL_CONFIGURATION.md) for detailed information on how to configure `MODEL_ID_CHAT` and `MODEL_ID_FAST` for your specific needs.
+
 1. Install Vercel CLI: `npm i -g vercel`
 2. Link local instance with Vercel and GitHub accounts (creates `.vercel` directory): `vercel link`
 3. Download your environment variables: `vercel env pull`
